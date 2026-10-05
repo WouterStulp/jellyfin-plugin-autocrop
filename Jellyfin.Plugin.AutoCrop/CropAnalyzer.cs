@@ -18,6 +18,11 @@ public sealed record AnalyzerOptions(
 public static class CropAnalyzer
 {
     /// <summary>
+    /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
+    /// </summary>
+    public const int Version = 2;
+
+    /// <summary>
     /// The whole-file picture area: the union over every keyframe that isn't fully black. A row or
     /// column that is black in all of them is a burned-in bar; one full-frame shot means no crop.
     /// </summary>

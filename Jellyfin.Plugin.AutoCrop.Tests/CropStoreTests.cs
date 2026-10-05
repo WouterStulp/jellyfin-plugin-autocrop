@@ -130,6 +130,64 @@ public class CropStoreTests : IDisposable
     }
 
     [Fact]
+    public void Samples_RoundTripCompactlyBesideTheResults()
+    {
+        var store = NewStore();
+        var id = Guid.NewGuid();
+        var samples = new List<KeyframeSample>
+        {
+            new(0, new CropBox(0, 60, 1920, 960)),
+            new(2.002, null),
+            new(4.171, new CropBox(2, 59, 1916, 961)),
+        };
+
+        store.SetSamples(id, 3012.48, samples);
+        var loaded = NewStore().GetSamples(id);
+
+        Assert.NotNull(loaded);
+        Assert.Equal(3012.48, loaded.Value.DurationSeconds);
+        Assert.Equal(samples, loaded.Value.Samples);
+        Assert.True(File.Exists(Path.Combine(_dir, "data", "samples", id.ToString("N") + ".json.gz")));
+        Assert.False(File.Exists(_storePath));
+        Assert.Null(store.GetSamples(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void RemoveAllExcept_DeletesTheKeyframesToo()
+    {
+        var store = NewStore();
+        var keep = ResultFor(_video);
+        var gone = ResultFor(_video);
+        store.Set(keep);
+        store.Set(gone);
+        store.SetSamples(keep.ItemId, 10, new[] { new KeyframeSample(0, null) });
+        store.SetSamples(gone.ItemId, 10, new[] { new KeyframeSample(0, null) });
+
+        store.RemoveAllExcept(new HashSet<Guid> { keep.ItemId });
+
+        Assert.NotNull(store.GetSamples(keep.ItemId));
+        Assert.Null(store.GetSamples(gone.ItemId));
+    }
+
+    [Fact]
+    public void Replace_SkipsResultsThatChangedSinceTheyWereRead()
+    {
+        var store = NewStore();
+        var stale = ResultFor(_video);
+        var current = ResultFor(_video);
+        store.Set(stale);
+        store.Set(current);
+        var rescanned = ResultFor(_video, stale.ItemId);
+        store.Set(rescanned);
+
+        store.Replace(new[] { (stale, stale.Copy()), (current, current.Copy()) });
+
+        Assert.Same(rescanned, store.Get(stale.ItemId));
+        Assert.NotSame(current, store.Get(current.ItemId));
+        Assert.Equal(current.Crop, NewStore().Get(current.ItemId)!.Crop);
+    }
+
+    [Fact]
     public void HasCrop_FullFrameUnionWithCroppedSegments_StillCounts()
     {
         var result = ResultFor(_video);

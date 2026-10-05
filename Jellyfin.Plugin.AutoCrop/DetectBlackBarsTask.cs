@@ -56,6 +56,8 @@ public class DetectBlackBarsTask : IScheduledTask
         if (items.Count > 0)
             _store.RemoveAllExcept(items.Select(i => i.Id).ToHashSet());
 
+        // Results from an older analysis are recomputed from their keyframes; the rest need a scan.
+        _scanner.Reanalyse(outdatedOnly: true);
         var todo = items.Where(_scanner.NeedsScan).ToList();
         _logger.LogInformation("AutoCrop: {Count} of {Total} videos need a scan", todo.Count, items.Count);
 

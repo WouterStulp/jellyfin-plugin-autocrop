@@ -62,7 +62,7 @@ Requires Jellyfin 10.11.9 or later, including 12.x. ffmpeg is the one Jellyfin a
 - Minimum segment length (default 30 s). Real format changes last much longer, so this also removes brief flickers.
 - Transition time (default 300 ms, 0 for instant).
 
-The library scan, the scheduled task "Detect black bars", runs daily at 02:00. Change its schedule under **Dashboard → Scheduled tasks**. Changes to the minimum bar or segment length apply to items scanned after the change; use Rescan to apply them to existing items.
+The library scan, the scheduled task "Detect black bars", runs daily at 02:00. Change its schedule under **Dashboard → Scheduled tasks**. Every scan keeps its keyframe measurements, so after changing the minimum bar or segment length, **Re-analyse all** applies them to every scanned item in seconds, without running ffmpeg again.
 
 ## How it works
 
@@ -94,7 +94,13 @@ From those keyframes the plugin builds:
 
 Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
 
-Results are stored per item (path, file size and modification time, frame size, crop, segments, scan time, or the failure reason) in `crops.json` in the plugin's data folder. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+Results are stored per item (path, file size and modification time, frame size, crop, segments, scan time, analysis version, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+
+The keyframes make the analysis cheap to redo:
+
+- **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg.
+- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead.
+- Keyframes are deleted together with the result when an item leaves the library.
 
 ### When scans run
 
@@ -120,6 +126,7 @@ The plugin adds a small script to the web client's `index.html`. It does this at
 | --- | --- | --- |
 | `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, default mode and transition for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
+| `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes for a scan. |
 | `GET /AutoCrop/Stats` | administrator | Counts for the dashboard. |
 | `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `failed`). |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |

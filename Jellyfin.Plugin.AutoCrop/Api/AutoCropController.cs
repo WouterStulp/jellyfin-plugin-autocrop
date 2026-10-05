@@ -25,13 +25,16 @@ public class AutoCropController : ControllerBase
     private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly CropStore _store;
+    private readonly CropScanner _scanner;
     private readonly ScanQueue _queue;
 
-    public AutoCropController(ILibraryManager libraryManager, IUserManager userManager, CropStore store, ScanQueue queue)
+    public AutoCropController(
+        ILibraryManager libraryManager, IUserManager userManager, CropStore store, CropScanner scanner, ScanQueue queue)
     {
         _libraryManager = libraryManager;
         _userManager = userManager;
         _store = store;
+        _scanner = scanner;
         _queue = queue;
     }
 
@@ -86,6 +89,22 @@ public class AutoCropController : ControllerBase
         _store.Remove(itemId);
         _queue.Enqueue(itemId, settle: false);
         return Accepted();
+    }
+
+    /// <summary>
+    /// Recomputes every result from its stored keyframes with the current settings, without ffmpeg.
+    /// Items scanned before keyframes were kept are queued for a scan.
+    /// </summary>
+    [HttpPost("Reanalyse")]
+    [Authorize(Policy = AdminPolicy)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult Reanalyse()
+    {
+        var (reanalysed, withoutSamples) = _scanner.Reanalyse(outdatedOnly: false);
+        foreach (var itemId in withoutSamples)
+            _queue.Enqueue(itemId, settle: false);
+
+        return Ok(new { reanalysed, rescanning = withoutSamples.Count });
     }
 
     [HttpGet("Stats")]

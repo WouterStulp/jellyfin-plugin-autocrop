@@ -107,21 +107,105 @@ public class CropScannerTests : IDisposable
         return path;
     }
 
-    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+    private CropStore Store() => new(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
+
+    private static CropScanner Scanner(CropStore store, string? ffmpeg = null, EncodingOptions? encoding = null)
     {
         var encoder = Substitute.For<IMediaEncoder>();
-        encoder.EncoderPath.Returns(ffmpeg);
+        encoder.EncoderPath.Returns(ffmpeg ?? "ffmpeg-must-not-run");
         var configuration = Substitute.For<IConfigurationManager>();
         configuration.GetConfiguration("encoding").Returns(encoding);
-        var store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        var scanner = new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
+        return new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
+    }
+
+    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+    {
+        var store = Store();
+        var scanner = Scanner(store, ffmpeg, encoding);
         var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = Path.GetFileName(path) };
 
         var result = await scanner.ScanAsync(movie, CancellationToken.None);
 
         Assert.Same(result, store.GetCurrent(movie.Id, path));
         Assert.False(scanner.NeedsScan(movie));
+        Assert.Equal(CropAnalyzer.Version, result.AnalysisVersion);
+        if (!result.Failed)
+            Assert.Equal(result.Keyframes, store.GetSamples(movie.Id)!.Value.Samples.Count);
         return result;
+    }
+
+    /// <summary>A movie on disk with a stored result from the first analysis, which had no version.</summary>
+    private (Movie Movie, CropResult Result) OutdatedResult(CropStore store)
+    {
+        var path = Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".mkv");
+        File.WriteAllText(path, "video");
+        var file = new FileInfo(path);
+        var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = "Film" };
+        var result = new CropResult
+        {
+            ItemId = movie.Id,
+            Path = path,
+            FileSize = file.Length,
+            FileModifiedUtc = file.LastWriteTimeUtc,
+            FrameWidth = 1920,
+            FrameHeight = 1080,
+            Crop = CropBox.Full(1920, 1080),
+            Segments = new List<CropSegment> { new(0, 30, new CropBox(600, 400, 276, 100)), new(30, 60, CropBox.Full(1920, 1080)) },
+        };
+        store.Set(result);
+        return (movie, result);
+    }
+
+    [Fact]
+    public void Reanalyse_OutdatedResultWithKeyframes_IsRecomputedWithoutFfmpeg()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, _) = OutdatedResult(store);
+        var scope = new CropBox(0, 138, 1920, 804);
+        store.SetSamples(movie.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, i == 10 ? new CropBox(600, 400, 276, 100) : scope)).ToList());
+
+        var (reanalysed, withoutSamples) = scanner.Reanalyse(outdatedOnly: true);
+
+        Assert.Equal(1, reanalysed);
+        Assert.Empty(withoutSamples);
+        var result = Store().Get(movie.Id)!;
+        Assert.Equal(scope, result.Crop);
+        Assert.Null(result.Segments);
+        Assert.Equal(CropAnalyzer.Version, result.AnalysisVersion);
+        Assert.False(scanner.NeedsScan(movie));
+    }
+
+    [Fact]
+    public void Reanalyse_OutdatedResultWithoutKeyframes_NeedsAScan()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, result) = OutdatedResult(store);
+
+        var (reanalysed, withoutSamples) = scanner.Reanalyse(outdatedOnly: true);
+
+        Assert.Equal(0, reanalysed);
+        Assert.Equal(movie.Id, Assert.Single(withoutSamples));
+        Assert.Same(result, store.Get(movie.Id));
+        Assert.True(scanner.NeedsScan(movie));
+    }
+
+    [Fact]
+    public void Reanalyse_CurrentResults_OnlyWhenAskedForAll()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisVersion = CropAnalyzer.Version;
+        store.SetSamples(movie.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, new CropBox(0, 60, 1920, 960))).ToList());
+
+        Assert.Equal(0, scanner.Reanalyse(outdatedOnly: true).Reanalysed);
+        Plugin.Instance!.Configuration.MinimumBarPercent = 10;
+        Assert.Equal(1, scanner.Reanalyse(outdatedOnly: false).Reanalysed);
+
+        // 60 px is under 10% of 1080: with the new setting the bars are left alone.
+        Assert.Equal(CropBox.Full(1920, 1080), store.Get(movie.Id)!.Crop);
     }
 
     private static void AssertBox(CropBox expected, CropBox? actual)

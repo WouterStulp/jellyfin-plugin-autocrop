@@ -76,6 +76,18 @@ public sealed class ScanQueue : IHostedService, IDisposable
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
+        // After an update that changed the analysis: recompute from stored keyframes, and rescan
+        // results that were made before keyframes were kept.
+        try
+        {
+            foreach (var itemId in _scanner.Reanalyse(outdatedOnly: true).WithoutSamples)
+                Enqueue(itemId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "AutoCrop could not re-analyse the stored results");
+        }
+
         try
         {
             await foreach (var (itemId, due) in _channel.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))

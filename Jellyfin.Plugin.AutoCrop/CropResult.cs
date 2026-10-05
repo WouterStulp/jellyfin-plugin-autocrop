@@ -36,6 +36,9 @@ public sealed class CropResult
 
     public string? Error { get; set; }
 
+    /// <summary>The <see cref="CropAnalyzer.Version"/> that produced Crop and Segments; 0 for results from before versions.</summary>
+    public int AnalysisVersion { get; set; }
+
     [JsonIgnore]
     public bool Failed => Error != null;
 
@@ -54,4 +57,6 @@ public sealed class CropResult
             return Crop != full || (Segments?.Any(s => s.Box != full) ?? false);
         }
     }
+
+    public CropResult Copy() => (CropResult)MemberwiseClone();
 }
