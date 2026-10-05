@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: SDK version matches targetAbi.txt
+        # The Jellyfin SDK we compile against is the minimum Jellyfin a release loads on.
+        run: |
+          abi=$(cat targetAbi.txt)
+          sdk=$(grep -oP 'Include="Jellyfin.Controller" Version="\K[^"]+' Jellyfin.Plugin.AutoCrop/Jellyfin.Plugin.AutoCrop.csproj)
+          [ "${abi%.0}" = "$sdk" ] || [ "$abi" = "$sdk" ] || { echo "::error::Jellyfin.Controller $sdk != targetAbi.txt $abi"; exit 1; }
+
+      # ffmpeg enables the end-to-end detection tests; without it they are skipped.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - run: dotnet test -c Release
+
+      - name: Player maths
+        run: node test/crop-math.test.js

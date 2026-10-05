@@ -1,0 +1,122 @@
+name: Release
+
+# Runs when a release is published on GitHub. The tag is the version (v1.0.0.0 builds 1.0.0.0), the
+# release text is the changelog. The build job has a read-only token; only the publish job can write,
+# and it runs none of the repository's code, so a compromised build dependency can't publish.
+# The plugin repository Jellyfin installs from is the manifest.json asset of the latest release:
+# https://github.com/WouterStulp/jellyfin-plugin-autocrop/releases/latest/download/manifest.json
+# Adapted from Jellyscribe's release workflow (MIT).
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      abi: ${{ steps.version.outputs.abi }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Version from tag
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=${TAG#v}
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::Tag $TAG is not vMAJOR.MINOR.PATCH.BUILD, e.g. v1.0.0.0"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "abi=$(cat targetAbi.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Test
+        run: |
+          dotnet test -c Release
+          node test/crop-math.test.js
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dotnet publish -c Release Jellyfin.Plugin.AutoCrop/Jellyfin.Plugin.AutoCrop.csproj -o out \
+            -p:Version="$VERSION" -p:AssemblyVersion="$VERSION" -p:FileVersion="$VERSION"
+          zip -j "autocrop-v$VERSION.zip" out/Jellyfin.Plugin.AutoCrop.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: autocrop-v*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: plugin
+
+      - name: Attach the plugin and the updated manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          ABI: ${{ needs.build.outputs.abi }}
+          NOTES: ${{ github.event.release.body }}
+        run: |
+          zip="autocrop-v$VERSION.zip"
+          # Earlier versions come from the manifest of the newest other release that has one.
+          for tag in $(gh api "repos/$REPO/releases?per_page=100" -q '.[] | select(.draft | not) | .tag_name'); do
+            [ "$tag" = "$TAG" ] && continue
+            gh release download "$tag" -R "$REPO" -p manifest.json -O previous.json 2>/dev/null && break
+          done
+          python3 - "$zip" <<'PY'
+          import datetime, hashlib, json, os, sys
+          zip_name = sys.argv[1]
+          version = os.environ['VERSION']
+          if os.path.exists('previous.json'):
+              manifest = json.load(open('previous.json'))
+          else:
+              manifest = [{
+                  'guid': '582167bd-db8e-4e2f-bec7-5dd11b6d82a2',
+                  'name': 'AutoCrop',
+                  'overview': 'Remove burned-in black bars during playback',
+                  'description': 'Measures the real picture area of every movie and episode with ffmpeg and zooms the web player onto it, per scene or for the whole file.',
+                  'category': 'General',
+                  'owner': 'WouterStulp',
+                  'versions': [],
+              }]
+          versions = [v for v in manifest[0]['versions'] if v['version'] != version]
+          versions.insert(0, {
+              'version': version,
+              'changelog': os.environ['NOTES'].strip() or f'AutoCrop {version}',
+              'targetAbi': os.environ['ABI'],
+              'sourceUrl': f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['TAG']}/{zip_name}",
+              'checksum': hashlib.md5(open(zip_name, 'rb').read()).hexdigest(),
+              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+          })
+          manifest[0]['versions'] = versions
+          json.dump(manifest, open('manifest.json', 'w'), indent=2)
+          PY
+          gh release upload "$TAG" "$zip" manifest.json -R "$REPO" --clobber
