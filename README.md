@@ -7,6 +7,7 @@ Some files carry their letterbox inside the frame: a 2:1 film stored as 1920×10
 ## What it does
 
 - **Measures the picture, it doesn't guess.** Every keyframe of the whole file is checked. A row or column that is black in every keyframe is a bar; anything that ever shows picture is kept. A film with a single full-frame shot is never cropped in that shot.
+- **Skips the slow part when it can.** Most files have no bars. Jellyfin's trickplay thumbnails show that in about a second, so those files aren't decoded at all. Anything the thumbnails can't rule out gets the full keyframe scan, and every crop comes from that scan.
 - **Per scene, for films that change shape.** IMAX releases switch between 2.39:1 and 1.90:1. In per-scene mode the player follows those changes and zooms as far as each scene allows, without ever cutting off picture.
 - **Only zooms when it helps.** A 2:1 picture in a 16:9 frame on a 16:9 screen already fills the width, so nothing changes. On a 21:9 screen it zooms in until the bars are gone.
 - **Letterbox and pillarbox.** Bars at the top and bottom, the sides, or both.
@@ -49,14 +50,16 @@ Requires Jellyfin 10.11.9 or later, including 12.x. ffmpeg is the one Jellyfin a
 **Dashboard → Plugins → AutoCrop** has two views.
 
 **Overview**
-- Counts: scanned, with bars, per scene (more than one segment), pending (not scanned yet), failed.
-- A table of every scanned item: title, frame size, picture size and aspect ratio (e.g. 1920×960 · 2.00:1), number of segments with a small timeline of where the shape changes, scan date (dd-mm-yy) and status.
+- Counts: scanned, with bars, per scene (more than one segment), by trickplay (settled from the thumbnails without decoding the file), pending (not scanned yet), failed.
+- A table of every scanned item: title, frame size, picture size and aspect ratio (e.g. 1920×960 · 2.00:1), number of segments with a small timeline of where the shape changes, scan date (dd-mm-yy) with what it was measured on (`trickplay` or `keyframes`), and status.
 - Search, filters (all / with bars / per scene / no bars / failed), paging, and a **Rescan** button per row.
 - Failed scans show ffmpeg's reason. They aren't retried every night; use Rescan, or they're retried automatically once the file changes.
 - **Scan library now** runs the scheduled task and shows its progress.
 
 **Settings**
 - Enable or disable the plugin.
+- Decode on the GPU (default on).
+- Use trickplay images to skip files without bars (default on).
 - Default mode.
 - Minimum bar: bars thinner than this share of the width or height (default 1%) are ignored, so edge noise doesn't cause 2-pixel crops.
 - Minimum segment length (default 30 s). Real format changes last much longer, so this also removes brief flickers.
@@ -66,9 +69,30 @@ The library scan, the scheduled task "Detect black bars", runs daily at 02:00. C
 
 ## How it works
 
+### Trickplay pre-check
+
+Jellyfin's trickplay images are small thumbnails (320 px wide, one every 10 seconds by default) tiled into sheets of 10×10. Measuring them takes about a second, where the keyframe scan reads the whole file at disk speed (20–60 seconds per episode). Before the keyframe scan, AutoCrop asks Jellyfin (`ITrickplayManager`) for the item's trickplay, takes the largest resolution, and runs one ffmpeg over its sheets, wherever Jellyfin keeps them (the metadata folder, or beside the file with "Save trickplay images next to media"):
+
+```
+ffmpeg -f image2 -framerate 1 -start_number 0 -i <trickplay folder>/%d.jpg \
+       -vf untile=10x10,cropdetect=limit=0.094:round=2:reset=1:skip=0 -f null -
+```
+
+`untile` splits each sheet back into its thumbnails, in order: thumbnail *n* is at *n* × interval. The last sheet is padded with black cells past the thumbnail count; those are ignored.
+
+The thumbnails can only ever conclude **no crop needed**. That takes all of:
+
+- at least 20 thumbnails with picture;
+- together they show picture in every row and column of the thumbnail, so there is less than one thumbnail pixel of bar on every side (one pixel is about 6 video pixels at 1080p, under the 1% minimum bar);
+- no per-scene matte: no letterbox or pillarbox recurs in at least 5% (and at least 5) of the thumbnails, as in an IMAX film that switches shape.
+
+Such a file is recorded as uncropped with source `trickplay`; its thumbnail measurements are kept like keyframes, marked as thumbnail scale. Anything else goes to the keyframe scan: possible bars, possible mattes, too few thumbnails, no trickplay yet, or an ffmpeg failure. So does stale trickplay, made before the file was replaced: thumbnails older than the file, or thumbnail count × interval more than 10% or 60 seconds away from the runtime.
+
+Turn it off with "Use trickplay images to skip files without bars"; every file then gets the keyframe scan.
+
 ### Detection
 
-For every movie and episode with a local video file, the server runs Jellyfin's ffmpeg over the whole file, decoding keyframes only:
+For every movie and episode with a local video file that the trickplay pre-check didn't settle, the server runs Jellyfin's ffmpeg over the whole file, decoding keyframes only:
 
 ```
 ffmpeg -hide_banner -nostats -nostdin -skip_frame nokey -i <file> -map 0:V:0 \
@@ -94,11 +118,11 @@ From those keyframes the plugin builds:
 
 Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
 
-Results are stored per item (path, file size and modification time, frame size, crop, segments, scan time, analysis version, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+Results are stored per item (path, file size and modification time, frame size, crop, segments, scan time, analysis version, source, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
 
 The keyframes make the analysis cheap to redo:
 
-- **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg.
+- **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg. Results settled by trickplay are checked against the same rule again; one that no longer passes is dropped and queued for the keyframe scan.
 - When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead.
 - Keyframes are deleted together with the result when an item leaves the library.
 
@@ -126,8 +150,8 @@ The plugin adds a small script to the web client's `index.html`. It does this at
 | --- | --- | --- |
 | `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, default mode and transition for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
-| `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes for a scan. |
-| `GET /AutoCrop/Stats` | administrator | Counts for the dashboard. |
+| `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes, and trickplay results that no longer pass, for a scan. |
+| `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay. |
 | `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `failed`). |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
 
@@ -140,7 +164,7 @@ docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 dotnet t
 node test/crop-math.test.js
 ```
 
-The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, and an unreadable file. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
+The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, and an unreadable file. The trickplay tests make sheets from generated clips the way Jellyfin does (`fps=1/10`, 320 px wide, `tile=10x10`) in a folder laid out like Jellyfin's: a clean clip is settled by trickplay, a clip with bars and a shape-switching clip get the keyframe scan, and so do missing and stale trickplay. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
 
 `Jellyfin.Plugin.AutoCrop.Tests/Fixtures` holds the keyframe output of the plugin's ffmpeg command on ten real films and episodes (IMAX releases that switch shape, a scope-only release, and episodes with dark scenes and credits). The analysis is tested on them: one segment for the episodes, the right mattes for the IMAX films, and no keyframe's picture ever outside its segment.
 

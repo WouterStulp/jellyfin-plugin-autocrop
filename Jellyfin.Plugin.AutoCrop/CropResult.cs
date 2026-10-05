@@ -39,6 +39,9 @@ public sealed class CropResult
     /// <summary>The <see cref="CropAnalyzer.Version"/> that produced Crop and Segments; 0 for results from before versions.</summary>
     public int AnalysisVersion { get; set; }
 
+    /// <summary>What the result was measured on, one of <see cref="AnalysisSources"/>; null for results from before sources.</summary>
+    public string? AnalysisSource { get; set; }
+
     [JsonIgnore]
     public bool Failed => Error != null;
 
@@ -59,4 +62,12 @@ public sealed class CropResult
     }
 
     public CropResult Copy() => (CropResult)MemberwiseClone();
+}
+
+public static class AnalysisSources
+{
+    /// <summary>Jellyfin's trickplay thumbnails showed no bars, so the file wasn't decoded. Never a crop.</summary>
+    public const string Trickplay = "trickplay";
+
+    public const string Keyframes = "keyframes";
 }

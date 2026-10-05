@@ -32,7 +32,7 @@ public class AutoCropControllerTests : IDisposable
         TestPlugin.Create(_dir);
         _users.GetUserById(_alice.Id).Returns(_alice);
         _store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        _scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), _store, NullLogger<CropScanner>.Instance);
+        _scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), Substitute.For<MediaBrowser.Controller.Trickplay.ITrickplayManager>(), _store, NullLogger<CropScanner>.Instance);
         _queue = new ScanQueue(_library, _scanner, NullLogger<ScanQueue>.Instance);
     }
 

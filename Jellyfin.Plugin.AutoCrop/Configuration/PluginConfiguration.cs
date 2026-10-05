@@ -19,6 +19,9 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Decode on the GPU Jellyfin is set up for (Dashboard > Playback > Transcoding); the CPU is the fallback.</summary>
     public bool HardwareDecoding { get; set; } = true;
 
+    /// <summary>Settle files whose trickplay thumbnails show no bars at all without decoding them.</summary>
+    public bool UseTrickplay { get; set; } = true;
+
     /// <summary>Kill switch for the index.html rewrite (XML only), in case it ever clashes with another plugin.</summary>
     public bool DisableScriptMiddleware { get; set; }
 }
