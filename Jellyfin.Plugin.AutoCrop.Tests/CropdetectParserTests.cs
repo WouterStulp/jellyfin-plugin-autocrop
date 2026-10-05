@@ -55,6 +55,18 @@ public class CropdetectParserTests
     }
 
     [Fact]
+    public void OutOfOrderTimes_AreKeptAsReported()
+    {
+        // HEVC keyframes can come out swapped; the analysis sorts them, the parser must not move them.
+        var parser = Parse("""
+            x1:0 x2:1919 y1:140 y2:939 w:1920 h:800 x:0 y:140 pts:10010 t:10.010000
+            x1:0 x2:1919 y1:0 y2:1079 w:1920 h:1080 x:0 y:0 pts:0 t:0.000000
+            """);
+
+        Assert.Equal(new[] { 10.01, 0 }, parser.Samples.Select(s => s.Time));
+    }
+
+    [Fact]
     public void FrameSize_ComesFromTheOutputStream_NotTheCoverArt()
     {
         var parser = Parse(Stderr);

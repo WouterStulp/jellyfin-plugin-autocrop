@@ -33,7 +33,7 @@ AutoCrop only acts when Jellyfin's own aspect ratio setting is **Auto**. Choose 
   - Native browser subtitles (styling "Native", the default in most desktop browsers) would zoom along with the video, so AutoCrop moves them into the part of the picture that is still on screen.
   - ASS/SSA and PGS/VobSub subtitles are drawn on canvases beside the video. AutoCrop keeps them over the whole frame as Jellyfin would show it without zoom. They stay readable, but positioned signs and karaoke won't line up exactly with the zoomed picture.
 - **Keyframes only.** Detection decodes keyframes, not every frame (a 50-minute 1080p episode takes about 45 seconds on a NAS). A shape change that starts and ends between two keyframes isn't seen. Changes at a scene cut usually start a new keyframe, and the stretch between two keyframes around a change always gets the larger picture.
-- **Very dark scenes** can look like smaller pictures to ffmpeg. In static mode the union over the whole file makes this harmless. In per-scene mode a long, very dark stretch could be zoomed slightly too far; segments shorter than the minimum segment length are merged away.
+- **Very dark scenes** look like smaller pictures to ffmpeg. Per scene, a keyframe only ever picks one of the file's real picture shapes (see How it works), so a dark shot or a title card stays in its scene's shape. A dark shot in a taller (IMAX) scene can fit the narrower shape; a stretch of those shorter than the minimum segment length is merged back into the scene.
 
 ## Install
 
@@ -59,7 +59,7 @@ Requires Jellyfin 10.11.9 or later, including 12.x. ffmpeg is the one Jellyfin a
 - Enable or disable the plugin.
 - Default mode.
 - Minimum bar: bars thinner than this share of the width or height (default 1%) are ignored, so edge noise doesn't cause 2-pixel crops.
-- Minimum segment length (default 2 s).
+- Minimum segment length (default 30 s). Real format changes last much longer, so this also removes brief flickers.
 - Transition time (default 300 ms, 0 for instant).
 
 The library scan, the scheduled task "Detect black bars", runs daily at 02:00. Change its schedule under **Dashboard → Scheduled tasks**. Changes to the minimum bar or segment length apply to items scanned after the change; use Rescan to apply them to existing items.
@@ -84,11 +84,12 @@ From those keyframes the plugin builds:
 
 - **The whole-file crop:** the union of every keyframe's bounds (fully black keyframes are ignored). This is static mode and the fallback.
 - **The per-scene timeline:**
-  - Consecutive keyframes with the same bounds, within a few pixels, form one segment.
-  - Fully black keyframes, such as fades, belong to their neighbours.
+  - First the file's real picture shapes, its mattes. A matte is a letterbox (full width, equal bars top and bottom) or a pillarbox (full height, equal bars left and right) that recurs: keyframes within 0.5% of the frame size of each other form a cluster, and a cluster counts when it holds at least 5% of the keyframes and at least 20 of them, with an aspect between 1.30 and 2.80. Its box is the union of the cluster. The whole-file crop is always a matte too, the widest one. An IMAX film has two (2.39:1 and the full frame), almost everything else one.
+  - Each keyframe gets the smallest matte that fully contains its bounds. Dark shots, title cards and credits give smaller, scattered bounds inside the real picture, so they land in their scene's matte instead of becoming a shape of their own. A keyframe that pokes out of every other matte gets the whole-file crop.
+  - Consecutive keyframes with the same matte form one segment. Fully black keyframes, such as fades, belong to their neighbours.
   - The time between the last keyframe of one shape and the first of the next gets the union of both, so the switch to a larger picture always happens early enough.
-  - Segments shorter than the minimum length are merged into the neighbour that loses the least zoom, always taking the larger box. A brief full-frame flash widens the crop instead of being cut.
-  - Every segment's box contains every keyframe inside it.
+  - Segments shorter than the minimum length are merged into the neighbour that loses the least zoom, always taking the larger box. A brief full-frame shot widens the crop instead of being cut.
+  - Every segment's box contains every keyframe inside it. The tests check this on keyframes measured from ten real films and episodes.
   - A file with more than 200 segments falls back to the whole-file crop.
 
 Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
@@ -133,6 +134,8 @@ node test/crop-math.test.js
 ```
 
 The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, and an unreadable file. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
+
+`Jellyfin.Plugin.AutoCrop.Tests/Fixtures` holds the keyframe output of the plugin's ffmpeg command on ten real films and episodes (IMAX releases that switch shape, a scope-only release, and episodes with dark scenes and credits). The analysis is tested on them: one segment for the episodes, the right mattes for the IMAX films, and no keyframe's picture ever outside its segment.
 
 The plugin targets net9.0 against the Jellyfin 10.11.9 SDK. That one build loads on 10.11 and on 12.x servers. `targetAbi.txt` must equal the SDK package version.
 

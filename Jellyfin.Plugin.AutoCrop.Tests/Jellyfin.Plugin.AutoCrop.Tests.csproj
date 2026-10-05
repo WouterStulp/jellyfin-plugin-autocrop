@@ -21,6 +21,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Captured stderr of the plugin's ffmpeg command on real files, trimmed to the stream and keyframe lines. -->
+    <None Include="Fixtures\*.cropdetect.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Jellyfin.Plugin.AutoCrop\Jellyfin.Plugin.AutoCrop.csproj" />
   </ItemGroup>
 

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.AutoCrop.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
@@ -51,6 +52,21 @@ public class CropScanner
     /// <summary>Eligible, on disk, and without a result for the file as it is now (failed ones included).</summary>
     public bool NeedsScan(BaseItem item)
         => IsEligible(item) && File.Exists(item.Path) && _store.GetCurrent(item.Id, item.Path) == null;
+
+    internal static AnalyzerOptions Options()
+    {
+        var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds);
+    }
+
+    /// <summary>Fills in a result's crop and segments from its keyframes.</summary>
+    internal static void Analyse(CropResult result, IReadOnlyList<KeyframeSample> samples, double durationSeconds, AnalyzerOptions options)
+    {
+        var segments = CropAnalyzer.Segments(samples, result.FrameWidth, result.FrameHeight, durationSeconds, options);
+        result.Keyframes = samples.Count;
+        result.Crop = CropAnalyzer.Union(samples, result.FrameWidth, result.FrameHeight, options.MinimumBarPercent);
+        result.Segments = segments.Count > 1 ? segments.ToList() : null;
+    }
 
     internal static IReadOnlyList<string> Arguments(string path, IReadOnlyList<string>? hardwareDecoding = null) => new[]
     {
@@ -161,19 +177,13 @@ public class CropScanner
             return result;
         }
 
-        var config = Plugin.Instance?.Configuration;
-        var options = new AnalyzerOptions(config?.MinimumBarPercent ?? 1.0, config?.MinimumSegmentSeconds ?? 2.0);
-        var segments = CropAnalyzer.Segments(parser.Samples, width, height, parser.DurationSeconds ?? 0, options);
-
         result.FrameWidth = width;
         result.FrameHeight = height;
-        result.Keyframes = parser.Samples.Count;
-        result.Crop = CropAnalyzer.Union(parser.Samples, width, height, options.MinimumBarPercent);
-        result.Segments = segments.Count > 1 ? segments.ToList() : null;
+        Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, Options());
 
         _logger.LogInformation(
             "AutoCrop scanned {Name}: {Keyframes} keyframes in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
-            item.Name, result.Keyframes, watch.Elapsed.TotalSeconds, width, height, result.Crop, segments.Count);
+            item.Name, result.Keyframes, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
         return result;
     }
 

@@ -157,7 +157,8 @@ public class CropScannerTests : IDisposable
         var ffmpeg = Ffmpeg();
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "fullframe.mp4", "yuv420p", (4, 320), (3, 360), (4, 320)));
+        // Each part lasts longer than the 30 s minimum segment length.
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "fullframe.mp4", "yuv420p", (40, 320), (40, 360), (40, 320)));
 
         Assert.Equal(CropBox.Full(640, 360), result.Crop);
         Assert.Equal(3, result.Segments!.Count);
@@ -171,17 +172,17 @@ public class CropScannerTests : IDisposable
         var ffmpeg = Ffmpeg();
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
-        // 2.39:1 (640x268) for 6 s, 1.90:1 (640x336) for 4 s, 2.39:1 again for 6 s.
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (6, 268), (4, 336), (6, 268)));
+        // 2.39:1 (640x268), 1.90:1 (640x336) and 2.39:1 again, 40 s each: longer than the 30 s minimum.
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (40, 268), (40, 336), (40, 268)));
 
         var segments = result.Segments!;
         Assert.Equal(3, segments.Count);
         AssertBox(new CropBox(0, 46, 640, 268), segments[0].Box);
         AssertBox(new CropBox(0, 12, 640, 336), segments[1].Box);
         AssertBox(new CropBox(0, 46, 640, 268), segments[2].Box);
-        Assert.Equal(5, segments[1].Start, 1);
-        Assert.Equal(10, segments[1].End, 1);
-        Assert.Equal(16, segments[2].End, 1);
+        Assert.Equal(39, segments[1].Start, 1);
+        Assert.Equal(80, segments[1].End, 1);
+        Assert.Equal(120, segments[2].End, 1);
         AssertBox(new CropBox(0, 12, 640, 336), result.Crop);
     }
 

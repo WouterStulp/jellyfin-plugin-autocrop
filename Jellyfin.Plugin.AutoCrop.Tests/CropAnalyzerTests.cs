@@ -203,6 +203,67 @@ public class CropAnalyzerTests
     }
 
     [Fact]
+    public void Segments_DarkShotsAndTitleCards_StayInTheirScenesMatte()
+    {
+        // A scope film whose dark shots, a title card and the credits give smaller, scattered boxes.
+        var samples = Every2s(0, 600, Scope)
+            .Concat(Every2s(600, 700, new CropBox(400, 300, 1100, 400)))
+            .Concat(Every2s(700, 1300, Scope))
+            .Concat(Every2s(1300, 1400, new CropBox(820, 500, 276, 100)))
+            .Concat(Every2s(1400, 2000, Scope))
+            .Concat(Every2s(2000, 2200, new CropBox(360, 380, 1193, 40)))
+            .ToList();
+
+        Assert.Equal(new[] { new CropSegment(0, 2200, Scope) }, Segments(samples, 2200));
+    }
+
+    [Fact]
+    public void Segments_DarkShotInsideAnImaxScene_DoesNotSplitIt()
+    {
+        // A dark IMAX shot whose box fits the scope matte lands there, and the short stretch is
+        // absorbed back into the IMAX scene with the default minimum length.
+        var samples = Every2s(0, 600, Scope)
+            .Concat(Every2s(600, 700, Imax))
+            .Concat(Every2s(700, 710, new CropBox(300, 200, 1300, 600)))
+            .Concat(Every2s(710, 900, Imax))
+            .Concat(Every2s(900, 1500, Scope))
+            .ToList();
+
+        var segments = Segments(samples, 1500, Options with { MinimumSegmentSeconds = 30 });
+
+        Assert.Equal(new[] { Scope, Imax, Scope }, segments.Select(s => s.Box));
+    }
+
+    [Fact]
+    public void Segments_RecurringPillarbox_IsAMatte()
+    {
+        var pillar = new CropBox(240, 0, 1440, 1080);
+        var samples = Every2s(0, 300, pillar).Concat(Every2s(300, 600, Full)).Concat(Every2s(600, 900, pillar)).ToList();
+
+        var segments = Segments(samples, 900);
+
+        Assert.Equal(new[] { pillar, Full, pillar }, segments.Select(s => s.Box));
+    }
+
+    [Fact]
+    public void Mattes_RareOrImplausibleShapes_DontCount()
+    {
+        // 19 keyframes of a 2.39 picture is under the minimum of 20; a 4:1 strip is no film format.
+        var strip = new CropBox(0, 300, 1920, 480);
+        var boxes = Enumerable.Repeat(Full, 400).Concat(Enumerable.Repeat(Scope, 19)).Concat(Enumerable.Repeat(strip, 100)).ToList();
+
+        Assert.Equal(new[] { Full }, CropAnalyzer.Mattes(boxes, 9, 5, Options));
+    }
+
+    [Fact]
+    public void Segments_KeyframesOutOfOrder_AreSorted()
+    {
+        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).Reverse().ToList();
+
+        Assert.Equal(3, Segments(samples, 1500).Count);
+    }
+
+    [Fact]
     public void Segments_ThinBarsAreDroppedPerSegment()
     {
         var almostFull = new CropBox(0, 4, 1920, 1072);

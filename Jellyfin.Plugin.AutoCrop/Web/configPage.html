@@ -146,8 +146,8 @@
                                     <span class="desc">Bars thinner than this share of the width or height are left alone, so edge noise isn't cropped.</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Minimum segment length (s)</span>
-                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" />
-                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture.</span>
+                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
+                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Transition (ms)</span>
                                     <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
@@ -350,7 +350,7 @@
                             c.HardwareDecoding = $('acHardware').checked;
                             c.DefaultMode = $('acDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
-                            c.MinimumSegmentSeconds = number('acMinSegment', 2);
+                            c.MinimumSegmentSeconds = number('acMinSegment', 30);
                             c.TransitionMs = Math.round(number('acTransition', 300));
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
                         }).then(function (result) {
