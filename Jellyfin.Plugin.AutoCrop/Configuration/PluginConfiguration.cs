@@ -11,7 +11,8 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public double MinimumBarPercent { get; set; } = 1.0;
 
-    public double MinimumSegmentSeconds { get; set; } = 2.0;
+    /// <summary>Real format switches last much longer; shorter changes are merged into a neighbour.</summary>
+    public double MinimumSegmentSeconds { get; set; } = 30.0;
 
     public int TransitionMs { get; set; } = 300;
 

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.AutoCrop.Configuration;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
@@ -48,9 +49,62 @@ public class CropScanner
             && Path.IsPathFullyQualified(item.Path)
             && !string.Equals(Path.GetExtension(item.Path), ".strm", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Eligible, on disk, and without a result for the file as it is now (failed ones included).</summary>
+    /// <summary>
+    /// Eligible, on disk, and without a result for the file as it is now (failed ones included) from
+    /// the current analysis. An outdated result that had stored keyframes was already re-analysed by
+    /// <see cref="Reanalyse"/>, so what is left needs ffmpeg again.
+    /// </summary>
     public bool NeedsScan(BaseItem item)
-        => IsEligible(item) && File.Exists(item.Path) && _store.GetCurrent(item.Id, item.Path) == null;
+        => IsEligible(item)
+            && File.Exists(item.Path)
+            && _store.GetCurrent(item.Id, item.Path) is not { AnalysisVersion: >= CropAnalyzer.Version };
+
+    internal static AnalyzerOptions Options()
+    {
+        var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
+        return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds);
+    }
+
+    /// <summary>Fills in a result's crop and segments from its keyframes.</summary>
+    internal static void Analyse(CropResult result, IReadOnlyList<KeyframeSample> samples, double durationSeconds, AnalyzerOptions options)
+    {
+        var segments = CropAnalyzer.Segments(samples, result.FrameWidth, result.FrameHeight, durationSeconds, options);
+        result.Keyframes = samples.Count;
+        result.Crop = CropAnalyzer.Union(samples, result.FrameWidth, result.FrameHeight, options.MinimumBarPercent);
+        result.Segments = segments.Count > 1 ? segments.ToList() : null;
+        result.AnalysisVersion = CropAnalyzer.Version;
+    }
+
+    /// <summary>
+    /// Recomputes scan results from their stored keyframes with the current analysis and settings,
+    /// without ffmpeg. With <paramref name="outdatedOnly"/>, only results from an older analysis.
+    /// Returns how many were recomputed and the items that have no stored keyframes.
+    /// </summary>
+    public (int Reanalysed, IReadOnlyList<Guid> WithoutSamples) Reanalyse(bool outdatedOnly)
+    {
+        var options = Options();
+        var updates = new List<(CropResult Current, CropResult Updated)>();
+        var withoutSamples = new List<Guid>();
+        foreach (var result in _store.All().Where(r => !r.Failed && (!outdatedOnly || r.AnalysisVersion < CropAnalyzer.Version)))
+        {
+            var stored = _store.GetSamples(result.ItemId);
+            if (stored == null)
+            {
+                withoutSamples.Add(result.ItemId);
+                continue;
+            }
+
+            var updated = result.Copy();
+            Analyse(updated, stored.Value.Samples, stored.Value.DurationSeconds, options);
+            updates.Add((result, updated));
+        }
+
+        _store.Replace(updates);
+        if (updates.Count > 0 || withoutSamples.Count > 0)
+            _logger.LogInformation("AutoCrop re-analysed {Count} result(s); {Missing} have no stored keyframes", updates.Count, withoutSamples.Count);
+
+        return (updates.Count, withoutSamples);
+    }
 
     internal static IReadOnlyList<string> Arguments(string path, IReadOnlyList<string>? hardwareDecoding = null) => new[]
     {
@@ -116,6 +170,7 @@ public class CropScanner
             ItemId = item.Id,
             Path = path,
             ScannedAtUtc = DateTime.UtcNow,
+            AnalysisVersion = CropAnalyzer.Version,
         };
 
         try
@@ -161,19 +216,14 @@ public class CropScanner
             return result;
         }
 
-        var config = Plugin.Instance?.Configuration;
-        var options = new AnalyzerOptions(config?.MinimumBarPercent ?? 1.0, config?.MinimumSegmentSeconds ?? 2.0);
-        var segments = CropAnalyzer.Segments(parser.Samples, width, height, parser.DurationSeconds ?? 0, options);
-
         result.FrameWidth = width;
         result.FrameHeight = height;
-        result.Keyframes = parser.Samples.Count;
-        result.Crop = CropAnalyzer.Union(parser.Samples, width, height, options.MinimumBarPercent);
-        result.Segments = segments.Count > 1 ? segments.ToList() : null;
+        Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, Options());
+        _store.SetSamples(item.Id, parser.DurationSeconds ?? 0, parser.Samples);
 
         _logger.LogInformation(
             "AutoCrop scanned {Name}: {Keyframes} keyframes in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
-            item.Name, result.Keyframes, watch.Elapsed.TotalSeconds, width, height, result.Crop, segments.Count);
+            item.Name, result.Keyframes, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
         return result;
     }
 

@@ -80,13 +80,14 @@ public sealed class CropdetectParser
         var y1 = Int(bounds, 3);
         var y2 = Int(bounds, 4);
 
-        // cropdetect prints t:nan when a frame has no timestamp; keep the timeline ordered regardless.
-        var previous = _samples.Count > 0 ? _samples[^1].Time : 0;
+        // cropdetect prints t:nan when a frame has no timestamp; that keyframe takes the previous time.
+        // Real times are kept as they are, even out of order: HEVC keyframes can come out swapped
+        // (10.0 before 0.0), and the analysis sorts them.
         var time = bounds.Groups[5].Success
             && double.TryParse(bounds.Groups[5].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var t)
             && double.IsFinite(t)
-                ? Math.Max(t, previous)
-                : previous;
+                ? t
+                : _samples.Count > 0 ? _samples[^1].Time : 0;
 
         var box = x2 <= x1 || y2 <= y1 ? null : new CropBox(x1, y1, x2 - x1 + 1, y2 - y1 + 1);
         _samples.Add(new KeyframeSample(time, box));

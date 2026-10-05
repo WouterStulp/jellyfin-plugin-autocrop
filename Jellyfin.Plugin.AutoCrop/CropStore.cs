@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -9,7 +10,9 @@ namespace Jellyfin.Plugin.AutoCrop;
 
 /// <summary>
 /// Scan results, one JSON file in the plugin's data folder. Every change rewrites the file through a
-/// temp file and a move, so a crash mid-write leaves the previous version intact.
+/// temp file and a move, so a crash mid-write leaves the previous version intact. The raw keyframe
+/// bounds of each scan sit beside it in samples/{itemId}.json.gz, so a new analysis or new settings
+/// can be applied without running ffmpeg again.
 /// </summary>
 public class CropStore
 {
@@ -72,7 +75,7 @@ public class CropStore
         }
     }
 
-    /// <summary>Drops results for items that are no longer in the library.</summary>
+    /// <summary>Drops results and stored keyframes for items that are no longer in the library.</summary>
     public void RemoveAllExcept(IReadOnlySet<Guid> itemIds)
     {
         lock (_lock)
@@ -80,9 +83,91 @@ public class CropStore
             var results = Load();
             var stale = results.Keys.Where(id => !itemIds.Contains(id)).ToList();
             foreach (var id in stale)
+            {
                 results.Remove(id);
+                DeleteSamples(id);
+            }
+
             if (stale.Count > 0)
                 Save();
+        }
+    }
+
+    /// <summary>
+    /// Stores each updated result, but only while the result it was computed from is still the stored
+    /// one, so a re-analysis never overwrites a scan that finished in the meantime. One write for all.
+    /// </summary>
+    public void Replace(IReadOnlyList<(CropResult Current, CropResult Updated)> updates)
+    {
+        lock (_lock)
+        {
+            var results = Load();
+            var changed = false;
+            foreach (var (current, updated) in updates)
+            {
+                if (ReferenceEquals(results.GetValueOrDefault(current.ItemId), current))
+                {
+                    results[current.ItemId] = updated;
+                    changed = true;
+                }
+            }
+
+            if (changed)
+                Save();
+        }
+    }
+
+    /// <summary>
+    /// Stores a scan's keyframes as rows of [t, x1, x2, y1, y2] in cropdetect's inclusive bounds, or
+    /// [t] for a fully black keyframe, plus the file's duration.
+    /// </summary>
+    public void SetSamples(Guid itemId, double durationSeconds, IReadOnlyList<KeyframeSample> samples)
+    {
+        var path = SamplesPath(itemId);
+        var tmp = path + ".tmp";
+        var file = new SamplesFile(
+            durationSeconds,
+            samples.Select(s => s.Box is { } b ? new[] { s.Time, b.X, b.Right - 1, b.Y, b.Bottom - 1 } : new[] { s.Time }).ToList());
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            using (var stream = File.Create(tmp))
+            using (var gzip = new GZipStream(stream, CompressionLevel.SmallestSize))
+                JsonSerializer.Serialize(gzip, file, JsonOptions);
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Could not save keyframes to {Path}", path);
+        }
+    }
+
+    /// <summary>The stored keyframes of an item and its duration, or null when there are none.</summary>
+    public (double DurationSeconds, IReadOnlyList<KeyframeSample> Samples)? GetSamples(Guid itemId)
+    {
+        var path = SamplesPath(itemId);
+        try
+        {
+            if (!File.Exists(path))
+                return null;
+
+            using var stream = File.OpenRead(path);
+            using var gzip = new GZipStream(stream, CompressionMode.Decompress);
+            var file = JsonSerializer.Deserialize<SamplesFile>(gzip, JsonOptions);
+            if (file?.Keyframes == null)
+                return null;
+
+            var samples = file.Keyframes
+                .Select(k => new KeyframeSample(
+                    k[0],
+                    k.Length < 5 ? null : new CropBox((int)k[1], (int)k[3], (int)k[2] - (int)k[1] + 1, (int)k[4] - (int)k[3] + 1)))
+                .ToList();
+            return (file.Duration, samples);
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
+        {
+            _logger.LogError(ex, "Could not read keyframes from {Path}", path);
+            return null;
         }
     }
 
@@ -99,6 +184,21 @@ public class CropStore
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return false;
+        }
+    }
+
+    private string SamplesPath(Guid itemId)
+        => System.IO.Path.Combine(System.IO.Path.GetDirectoryName(_path())!, "samples", itemId.ToString("N") + ".json.gz");
+
+    private void DeleteSamples(Guid itemId)
+    {
+        try
+        {
+            File.Delete(SamplesPath(itemId));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning("Could not delete the keyframes of {ItemId}: {Message}", itemId, ex.Message);
         }
     }
 
@@ -142,4 +242,6 @@ public class CropStore
             _logger.LogError(ex, "Could not save scan results to {Path}", path);
         }
     }
+
+    private sealed record SamplesFile(double Duration, List<double[]> Keyframes);
 }

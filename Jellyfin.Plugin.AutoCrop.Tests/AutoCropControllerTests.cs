@@ -24,6 +24,7 @@ public class AutoCropControllerTests : IDisposable
     private readonly IUserManager _users = Substitute.For<IUserManager>();
     private readonly User _alice = new("alice", "test-provider", "test-reset");
     private readonly CropStore _store;
+    private readonly CropScanner _scanner;
     private readonly ScanQueue _queue;
 
     public AutoCropControllerTests()
@@ -31,8 +32,8 @@ public class AutoCropControllerTests : IDisposable
         TestPlugin.Create(_dir);
         _users.GetUserById(_alice.Id).Returns(_alice);
         _store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        var scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), _store, NullLogger<CropScanner>.Instance);
-        _queue = new ScanQueue(_library, scanner, NullLogger<ScanQueue>.Instance);
+        _scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), _store, NullLogger<CropScanner>.Instance);
+        _queue = new ScanQueue(_library, _scanner, NullLogger<ScanQueue>.Instance);
     }
 
     public void Dispose()
@@ -46,7 +47,7 @@ public class AutoCropControllerTests : IDisposable
         var identity = userId == null
             ? new ClaimsIdentity()
             : new ClaimsIdentity(new[] { new Claim("Jellyfin-UserId", userId.Value.ToString("N")) }, "Test");
-        return new AutoCropController(_library, _users, _store, _queue)
+        return new AutoCropController(_library, _users, _store, _scanner, _queue)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) } },
         };
@@ -163,6 +164,24 @@ public class AutoCropControllerTests : IDisposable
     }
 
     [Fact]
+    public void Reanalyse_RecomputesFromKeyframesAndQueuesItemsWithout()
+    {
+        var withSamples = ScannedMovie(CropBox.Full(1920, 1080));
+        var keyframes = Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, new CropBox(0, 60, 1920, 960))).ToList();
+        _store.SetSamples(withSamples.Id, 60, keyframes);
+        var withoutSamples = ScannedMovie(new CropBox(0, 60, 1920, 960));
+
+        var json = Json(Controller(_alice.Id).Reanalyse());
+
+        Assert.Equal(1, json.GetProperty("reanalysed").GetInt32());
+        Assert.Equal(1, json.GetProperty("rescanning").GetInt32());
+        Assert.Equal(new CropBox(0, 60, 1920, 960), _store.Get(withSamples.Id)!.Crop);
+        Assert.Equal(CropAnalyzer.Version, _store.Get(withSamples.Id)!.AnalysisVersion);
+        Assert.Equal(1, _queue.PendingCount);
+        Assert.NotNull(_store.Get(withoutSamples.Id));
+    }
+
+    [Fact]
     public void Stats_CountsEveryCategory()
     {
         ScannedMovie(new CropBox(0, 60, 1920, 960));
@@ -233,6 +252,7 @@ public class AutoCropControllerTests : IDisposable
     [Theory]
     [InlineData(nameof(AutoCropController.GetItem), null)]
     [InlineData(nameof(AutoCropController.Rescan), "RequiresElevation")]
+    [InlineData(nameof(AutoCropController.Reanalyse), "RequiresElevation")]
     [InlineData(nameof(AutoCropController.GetStats), "RequiresElevation")]
     [InlineData(nameof(AutoCropController.GetResults), "RequiresElevation")]
     public void Endpoints_RequireTheRightAuthorization(string action, string? policy)

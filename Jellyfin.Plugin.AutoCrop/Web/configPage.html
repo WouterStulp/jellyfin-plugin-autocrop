@@ -146,15 +146,15 @@
                                     <span class="desc">Bars thinner than this share of the width or height are left alone, so edge noise isn't cropped.</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Minimum segment length (s)</span>
-                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" />
-                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture.</span>
+                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
+                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Transition (ms)</span>
                                     <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
                                     <span class="desc">How long the zoom takes to follow a scene change; 0 switches instantly.</span>
                                 </label>
-                                <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Changes to the minimum bar or segment length apply to items scanned from now on.</p>
-                                <div><button type="submit" class="ac-btn primary">Save</button> <span class="ac-status" id="acSaveStatus"></span></div>
+                                <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Every scan keeps its keyframe measurements, so after changing the minimum bar or segment length, <b>Re-analyse all</b> applies them to every scanned item in seconds, without running ffmpeg again.</p>
+                                <div><button type="submit" class="ac-btn primary">Save</button> <button type="button" class="ac-btn" id="acReanalyse">Re-analyse all</button> <span class="ac-status" id="acSaveStatus"></span></div>
                             </form>
                         </section>
                     </main>
@@ -196,6 +196,8 @@
                     function getJson(path, query) { return ApiClient.getJSON(ApiClient.getUrl(path, query)); }
 
                     function post(path) { return ApiClient.ajax({ url: ApiClient.getUrl(path), type: 'POST' }); }
+
+                    function postJson(path) { return ApiClient.ajax({ url: ApiClient.getUrl(path), type: 'POST', dataType: 'json' }); }
 
                     function loadStats() {
                         getJson('AutoCrop/Stats').then(function (s) {
@@ -350,7 +352,7 @@
                             c.HardwareDecoding = $('acHardware').checked;
                             c.DefaultMode = $('acDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
-                            c.MinimumSegmentSeconds = number('acMinSegment', 2);
+                            c.MinimumSegmentSeconds = number('acMinSegment', 30);
                             c.TransitionMs = Math.round(number('acTransition', 300));
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
                         }).then(function (result) {
@@ -358,6 +360,20 @@
                             $('acSaveStatus').textContent = 'Saved';
                         }, function () {
                             $('acSaveStatus').textContent = 'Couldn\u2019t save';
+                        });
+                    }
+
+                    function reanalyse() {
+                        $('acReanalyse').disabled = true;
+                        $('acSaveStatus').textContent = 'Re-analysing\u2026';
+                        postJson('AutoCrop/Reanalyse').then(function (r) {
+                            $('acSaveStatus').textContent = 'Re-analysed ' + r.reanalysed + ' item' + (r.reanalysed === 1 ? '' : 's')
+                                + (r.rescanning ? '; ' + r.rescanning + ' scanned before keyframes were kept are queued for a scan' : '');
+                            refresh();
+                        }, function () {
+                            $('acSaveStatus').textContent = 'Couldn\u2019t re-analyse';
+                        }).then(function () {
+                            $('acReanalyse').disabled = false;
                         });
                     }
 
@@ -393,6 +409,7 @@
                     $('acNext').addEventListener('click', function () { state.start += PAGE_SIZE; loadRows(); });
                     $('acScanNow').addEventListener('click', scanNow);
                     $('acSettings').addEventListener('submit', saveSettings);
+                    $('acReanalyse').addEventListener('click', reanalyse);
 
                     refresh();
                     loadSettings();

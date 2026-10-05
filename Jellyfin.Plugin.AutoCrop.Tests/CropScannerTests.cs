@@ -107,21 +107,105 @@ public class CropScannerTests : IDisposable
         return path;
     }
 
-    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+    private CropStore Store() => new(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
+
+    private static CropScanner Scanner(CropStore store, string? ffmpeg = null, EncodingOptions? encoding = null)
     {
         var encoder = Substitute.For<IMediaEncoder>();
-        encoder.EncoderPath.Returns(ffmpeg);
+        encoder.EncoderPath.Returns(ffmpeg ?? "ffmpeg-must-not-run");
         var configuration = Substitute.For<IConfigurationManager>();
         configuration.GetConfiguration("encoding").Returns(encoding);
-        var store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        var scanner = new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
+        return new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
+    }
+
+    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+    {
+        var store = Store();
+        var scanner = Scanner(store, ffmpeg, encoding);
         var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = Path.GetFileName(path) };
 
         var result = await scanner.ScanAsync(movie, CancellationToken.None);
 
         Assert.Same(result, store.GetCurrent(movie.Id, path));
         Assert.False(scanner.NeedsScan(movie));
+        Assert.Equal(CropAnalyzer.Version, result.AnalysisVersion);
+        if (!result.Failed)
+            Assert.Equal(result.Keyframes, store.GetSamples(movie.Id)!.Value.Samples.Count);
         return result;
+    }
+
+    /// <summary>A movie on disk with a stored result from the first analysis, which had no version.</summary>
+    private (Movie Movie, CropResult Result) OutdatedResult(CropStore store)
+    {
+        var path = Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".mkv");
+        File.WriteAllText(path, "video");
+        var file = new FileInfo(path);
+        var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = "Film" };
+        var result = new CropResult
+        {
+            ItemId = movie.Id,
+            Path = path,
+            FileSize = file.Length,
+            FileModifiedUtc = file.LastWriteTimeUtc,
+            FrameWidth = 1920,
+            FrameHeight = 1080,
+            Crop = CropBox.Full(1920, 1080),
+            Segments = new List<CropSegment> { new(0, 30, new CropBox(600, 400, 276, 100)), new(30, 60, CropBox.Full(1920, 1080)) },
+        };
+        store.Set(result);
+        return (movie, result);
+    }
+
+    [Fact]
+    public void Reanalyse_OutdatedResultWithKeyframes_IsRecomputedWithoutFfmpeg()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, _) = OutdatedResult(store);
+        var scope = new CropBox(0, 138, 1920, 804);
+        store.SetSamples(movie.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, i == 10 ? new CropBox(600, 400, 276, 100) : scope)).ToList());
+
+        var (reanalysed, withoutSamples) = scanner.Reanalyse(outdatedOnly: true);
+
+        Assert.Equal(1, reanalysed);
+        Assert.Empty(withoutSamples);
+        var result = Store().Get(movie.Id)!;
+        Assert.Equal(scope, result.Crop);
+        Assert.Null(result.Segments);
+        Assert.Equal(CropAnalyzer.Version, result.AnalysisVersion);
+        Assert.False(scanner.NeedsScan(movie));
+    }
+
+    [Fact]
+    public void Reanalyse_OutdatedResultWithoutKeyframes_NeedsAScan()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, result) = OutdatedResult(store);
+
+        var (reanalysed, withoutSamples) = scanner.Reanalyse(outdatedOnly: true);
+
+        Assert.Equal(0, reanalysed);
+        Assert.Equal(movie.Id, Assert.Single(withoutSamples));
+        Assert.Same(result, store.Get(movie.Id));
+        Assert.True(scanner.NeedsScan(movie));
+    }
+
+    [Fact]
+    public void Reanalyse_CurrentResults_OnlyWhenAskedForAll()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisVersion = CropAnalyzer.Version;
+        store.SetSamples(movie.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, new CropBox(0, 60, 1920, 960))).ToList());
+
+        Assert.Equal(0, scanner.Reanalyse(outdatedOnly: true).Reanalysed);
+        Plugin.Instance!.Configuration.MinimumBarPercent = 10;
+        Assert.Equal(1, scanner.Reanalyse(outdatedOnly: false).Reanalysed);
+
+        // 60 px is under 10% of 1080: with the new setting the bars are left alone.
+        Assert.Equal(CropBox.Full(1920, 1080), store.Get(movie.Id)!.Crop);
     }
 
     private static void AssertBox(CropBox expected, CropBox? actual)
@@ -157,7 +241,8 @@ public class CropScannerTests : IDisposable
         var ffmpeg = Ffmpeg();
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "fullframe.mp4", "yuv420p", (4, 320), (3, 360), (4, 320)));
+        // Each part lasts longer than the 30 s minimum segment length.
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "fullframe.mp4", "yuv420p", (40, 320), (40, 360), (40, 320)));
 
         Assert.Equal(CropBox.Full(640, 360), result.Crop);
         Assert.Equal(3, result.Segments!.Count);
@@ -171,17 +256,17 @@ public class CropScannerTests : IDisposable
         var ffmpeg = Ffmpeg();
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
-        // 2.39:1 (640x268) for 6 s, 1.90:1 (640x336) for 4 s, 2.39:1 again for 6 s.
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (6, 268), (4, 336), (6, 268)));
+        // 2.39:1 (640x268), 1.90:1 (640x336) and 2.39:1 again, 40 s each: longer than the 30 s minimum.
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (40, 268), (40, 336), (40, 268)));
 
         var segments = result.Segments!;
         Assert.Equal(3, segments.Count);
         AssertBox(new CropBox(0, 46, 640, 268), segments[0].Box);
         AssertBox(new CropBox(0, 12, 640, 336), segments[1].Box);
         AssertBox(new CropBox(0, 46, 640, 268), segments[2].Box);
-        Assert.Equal(5, segments[1].Start, 1);
-        Assert.Equal(10, segments[1].End, 1);
-        Assert.Equal(16, segments[2].End, 1);
+        Assert.Equal(39, segments[1].Start, 1);
+        Assert.Equal(80, segments[1].End, 1);
+        Assert.Equal(120, segments[2].End, 1);
         AssertBox(new CropBox(0, 12, 640, 336), result.Crop);
     }
 

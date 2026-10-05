@@ -4,7 +4,12 @@ using System.Linq;
 
 namespace Jellyfin.Plugin.AutoCrop;
 
-public sealed record AnalyzerOptions(double MinimumBarPercent, double MinimumSegmentSeconds, int MaxSegments = 200);
+public sealed record AnalyzerOptions(
+    double MinimumBarPercent,
+    double MinimumSegmentSeconds,
+    int MaxSegments = 200,
+    double MinimumMatteShare = 0.05,
+    int MinimumMatteKeyframes = 20);
 
 /// <summary>
 /// Turns per-keyframe cropdetect bounds into the picture area of a file. Every rule here only ever
@@ -12,6 +17,11 @@ public sealed record AnalyzerOptions(double MinimumBarPercent, double MinimumSeg
 /// </summary>
 public static class CropAnalyzer
 {
+    /// <summary>
+    /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
+    /// </summary>
+    public const int Version = 2;
+
     /// <summary>
     /// The whole-file picture area: the union over every keyframe that isn't fully black. A row or
     /// column that is black in all of them is a burned-in bar; one full-frame shot means no crop.
@@ -50,28 +60,33 @@ public static class CropAnalyzer
     }
 
     /// <summary>
-    /// The per-scene timeline. Keyframes with (nearly) the same box form a run; the stretch between
-    /// two runs, where the real change happened somewhere between two keyframes, gets the union of
-    /// both boxes. Segments shorter than the minimum are absorbed into a neighbour by union.
+    /// The per-scene timeline. Every keyframe gets the smallest of the file's mattes that contains its
+    /// box, so a dark shot or a title card, whose box is smaller than the real picture, lands in the
+    /// matte of its scene instead of becoming a picture shape of its own. Consecutive keyframes with
+    /// the same matte form a run; the stretch between two runs, where the real change happened
+    /// somewhere between two keyframes, gets the union of both. Segments shorter than the minimum
+    /// are absorbed into a neighbour by union.
     /// </summary>
     public static IReadOnlyList<CropSegment> Segments(
         IReadOnlyList<KeyframeSample> samples, int frameWidth, int frameHeight, double durationSeconds, AnalyzerOptions options)
     {
-        var end = Math.Max(durationSeconds, samples.Count > 0 ? samples[^1].Time : 0);
+        var end = Math.Max(durationSeconds, samples.Count > 0 ? samples.Max(s => s.Time) : 0);
         var picture = samples.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
         if (picture.Count == 0)
             return new[] { new CropSegment(0, end, CropBox.Full(frameWidth, frameHeight)) };
 
         var toleranceX = Math.Max(4, frameWidth / 200);
         var toleranceY = Math.Max(4, frameHeight / 200);
+        var mattes = Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options);
 
         var runs = new List<(double First, double Last, CropBox Box)>();
         foreach (var sample in picture)
         {
-            if (runs.Count > 0 && runs[^1].Box.IsCloseTo(sample.Box!, toleranceX, toleranceY))
-                runs[^1] = (runs[^1].First, sample.Time, runs[^1].Box.Union(sample.Box!));
+            var matte = mattes.First(m => m.Contains(sample.Box!));
+            if (runs.Count > 0 && runs[^1].Box == matte)
+                runs[^1] = (runs[^1].First, sample.Time, matte);
             else
-                runs.Add((sample.Time, sample.Time, sample.Box!));
+                runs.Add((sample.Time, sample.Time, matte));
         }
 
         var segments = new List<CropSegment>();
@@ -98,6 +113,61 @@ public static class CropAnalyzer
             return new[] { new CropSegment(0, end, segments.Select(s => s.Box).Aggregate((a, b) => a.Union(b))) };
 
         return segments;
+    }
+
+    /// <summary>
+    /// The picture shapes the file really uses, smallest first. Always the whole-file union, plus
+    /// every letterbox (full width, equal bars top and bottom) or pillarbox (full height, equal bars
+    /// left and right) that recurs in enough keyframes. Dark shots and credits give scattered,
+    /// asymmetric boxes that never recur often enough to count. Each matte is the union of its
+    /// cluster, so it never cuts picture any of its keyframes showed.
+    /// </summary>
+    internal static IReadOnlyList<CropBox> Mattes(IReadOnlyList<CropBox> boxes, int toleranceX, int toleranceY, AnalyzerOptions options)
+    {
+        var union = boxes.Aggregate((a, b) => a.Union(b));
+        var mattes = new List<CropBox> { union };
+        var needed = Math.Max(options.MinimumMatteKeyframes, options.MinimumMatteShare * boxes.Count);
+
+        var letterbox = boxes.Where(b => b.X - union.X <= toleranceX
+            && union.Right - b.Right <= toleranceX
+            && Math.Abs((b.Y - union.Y) - (union.Bottom - b.Bottom)) <= toleranceY);
+        AddClusters(mattes, letterbox, b => (b.Y, b.Bottom), toleranceY, needed, toleranceX, toleranceY);
+
+        var pillarbox = boxes.Where(b => b.Y - union.Y <= toleranceY
+            && union.Bottom - b.Bottom <= toleranceY
+            && Math.Abs((b.X - union.X) - (union.Right - b.Right)) <= toleranceX);
+        AddClusters(mattes, pillarbox, b => (b.X, b.Right), toleranceX, needed, toleranceX, toleranceY);
+
+        return mattes.OrderBy(m => m.Area).ToList();
+    }
+
+    // Takes the most common edge pair as a seed, gathers every box within tolerance of it, and repeats
+    // until the next cluster is too small to be a real matte.
+    private static void AddClusters(
+        List<CropBox> mattes,
+        IEnumerable<CropBox> candidates,
+        Func<CropBox, (int Start, int End)> edges,
+        int tolerance,
+        double needed,
+        int toleranceX,
+        int toleranceY)
+    {
+        var left = candidates.ToList();
+        while (left.Count >= needed)
+        {
+            var seed = left.GroupBy(edges).MaxBy(g => g.Count())!.Key;
+            bool Near(CropBox box) => Math.Abs(edges(box).Start - seed.Start) <= tolerance && Math.Abs(edges(box).End - seed.End) <= tolerance;
+
+            var cluster = left.Where(Near).ToList();
+            if (cluster.Count < needed)
+                return;
+
+            left.RemoveAll(Near);
+            var matte = cluster.Aggregate((a, b) => a.Union(b));
+            var aspect = (double)matte.Width / matte.Height;
+            if (aspect is >= 1.30 and <= 2.80 && !mattes.Any(m => m.IsCloseTo(matte, toleranceX, toleranceY)))
+                mattes.Add(matte);
+        }
     }
 
     private static List<CropSegment> MergeSimilar(List<CropSegment> segments, int toleranceX, int toleranceY)
