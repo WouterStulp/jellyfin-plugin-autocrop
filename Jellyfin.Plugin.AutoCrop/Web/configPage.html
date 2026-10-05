@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AutoCrop</title>
+</head>
+<body>
+    <div id="autoCropConfigPage" data-role="page" class="page type-interior pluginConfigurationPage ac-app">
+        <div data-role="content">
+            <div class="content-primary">
+                <style>
+                /* Same look as the Jellyscribe dashboard (ws-*), self-contained and scoped to this page. */
+                .ac-app {
+                    --ac-bg: #14161c; --ac-surface: #1c1f27; --ac-surface-2: #242833; --ac-raise: #2b3040;
+                    --ac-border: rgba(255,255,255,.085); --ac-border-strong: rgba(255,255,255,.16);
+                    --ac-text: #edeff5; --ac-muted: #9aa1b5; --ac-faint: #8b93a5;
+                    --ac-primary: #5fb8d9; --ac-primary-soft: rgba(95,184,217,.15);
+                    --ac-ok: #5fc9a8; --ac-warn: #e8a23c; --ac-crit: #e0714f; --ac-scene: #a78bfa;
+                    --ac-shadow: 0 8px 30px -14px rgba(0,0,0,.55);
+                    --ac-mono: ui-monospace,"SF Mono","Cascadia Code",Menlo,monospace;
+                    --ac-r: 12px;
+                    color: var(--ac-text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                    font-size: 14px; line-height: 1.5; background: var(--ac-bg);
+                }
+                .ac-app .content-primary, .ac-app div[data-role="content"] { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+                .ac-app .ac { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: var(--ac-bg); }
+                .ac-app .ac-rail { border-right: 1px solid var(--ac-border); background: var(--ac-surface); padding: 22px 16px; }
+                .ac-app .ac-brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px 18px; }
+                .ac-app .ac-glyph { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: linear-gradient(150deg, var(--ac-primary), var(--ac-scene)); }
+                .ac-app .ac-brand b { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
+                .ac-app .ac-brand small { display: block; font-size: 11px; color: var(--ac-faint); }
+                .ac-app .ac-nav { display: flex; flex-direction: column; gap: 2px; }
+                .ac-app .ac-nav a { padding: 8px 10px; border-radius: 8px; color: var(--ac-muted); font-weight: 500; cursor: pointer; }
+                .ac-app .ac-nav a:hover { background: var(--ac-surface-2); color: var(--ac-text); }
+                .ac-app .ac-nav a.active { background: var(--ac-primary-soft); color: var(--ac-text); }
+                .ac-app .ac-main { padding: 24px 28px 40px; min-width: 0; }
+                .ac-app .ac-view { display: none; } .ac-app .ac-view.show { display: block; }
+                .ac-app .ac-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+                .ac-app .ac-head h1 { font-size: 21px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+                .ac-app .ac-head p { margin: 4px 0 0; color: var(--ac-muted); font-size: 13px; }
+                .ac-app .ac-btn { border: 1px solid var(--ac-border-strong); background: var(--ac-surface); color: var(--ac-text); font: inherit; font-size: 13px; font-weight: 550; padding: 8px 14px; border-radius: 9px; cursor: pointer; }
+                .ac-app .ac-btn:hover { border-color: var(--ac-faint); }
+                .ac-app .ac-btn.primary { background: var(--ac-primary); border-color: var(--ac-primary); color: #14161c; }
+                .ac-app .ac-btn.small { font-size: 11.5px; padding: 4px 10px; border-radius: 7px; background: var(--ac-surface-2); }
+                .ac-app .ac-btn:disabled { opacity: .45; cursor: not-allowed; }
+                .ac-app .ac-progress { display: none; align-items: center; gap: 10px; margin-bottom: 16px; font-size: 12.5px; color: var(--ac-muted); }
+                .ac-app .ac-progress.show { display: flex; }
+                .ac-app .ac-progress .bar { flex: 1; max-width: 360px; height: 6px; border-radius: 3px; background: var(--ac-surface-2); overflow: hidden; }
+                .ac-app .ac-progress .fill { height: 100%; width: 0; background: var(--ac-primary); transition: width .4s; }
+                .ac-app .ac-tiles { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 12px; margin-bottom: 22px; }
+                @media (max-width: 1100px) { .ac-app .ac-tiles { grid-template-columns: repeat(3, minmax(0,1fr)); } .ac-app .ac { grid-template-columns: 1fr; } .ac-app .ac-rail { border-right: 0; border-bottom: 1px solid var(--ac-border); } }
+                .ac-app .ac-tile { background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: var(--ac-r); padding: 15px 16px; box-shadow: var(--ac-shadow); position: relative; overflow: hidden; }
+                .ac-app .ac-tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--ac-primary)); }
+                .ac-app .ac-tile .n { font-family: var(--ac-mono); font-variant-numeric: tabular-nums; font-size: 26px; font-weight: 600; line-height: 1.1; }
+                .ac-app .ac-label { font-family: var(--ac-mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--ac-faint); }
+                .ac-app .ac-tools { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+                .ac-app .ac-chip { border: 1px solid var(--ac-border); background: var(--ac-surface); border-radius: 20px; padding: 5px 13px; font: inherit; font-size: 12.5px; font-weight: 550; color: var(--ac-muted); cursor: pointer; }
+                .ac-app .ac-chip.on { color: var(--ac-text); border-color: var(--ac-primary); background: var(--ac-primary-soft); box-shadow: inset 0 0 0 1px var(--ac-primary); }
+                .ac-app .ac-input { box-sizing: border-box; background: var(--ac-surface-2); border: 1px solid var(--ac-border); border-radius: 8px; padding: 8px 11px; color: var(--ac-text); font: inherit; font-size: 13px; }
+                .ac-app .ac-search { margin-left: auto; width: 240px; max-width: 100%; }
+                .ac-app .ac-panel { background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: var(--ac-r); box-shadow: var(--ac-shadow); overflow-x: auto; }
+                .ac-app table.ac-table { width: 100%; border-collapse: collapse; }
+                .ac-app .ac-table th { text-align: left; font-family: var(--ac-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ac-faint); font-weight: 500; padding: 12px 14px; border-bottom: 1px solid var(--ac-border); white-space: nowrap; }
+                .ac-app .ac-table td { padding: 10px 14px; border-bottom: 1px solid var(--ac-border); vertical-align: middle; }
+                .ac-app .ac-table tr:last-child td { border-bottom: 0; }
+                .ac-app .ac-table tbody tr:hover { background: var(--ac-surface-2); }
+                .ac-app .ac-mono { font-family: var(--ac-mono); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+                .ac-app .ac-dim { color: var(--ac-faint); }
+                .ac-app .ac-pill { font-family: var(--ac-mono); font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 20px; white-space: nowrap; }
+                .ac-app .ac-pill.bars { color: var(--ac-primary); background: var(--ac-primary-soft); }
+                .ac-app .ac-pill.per-scene { color: var(--ac-scene); background: rgba(167,139,250,.14); }
+                .ac-app .ac-pill.no-bars { color: var(--ac-muted); background: var(--ac-surface-2); }
+                .ac-app .ac-pill.failed { color: var(--ac-crit); background: rgba(224,113,79,.14); cursor: help; }
+                .ac-app .ac-pill.queued { color: var(--ac-warn); background: rgba(232,162,60,.14); }
+                .ac-app .ac-timeline { display: flex; width: 160px; height: 14px; border-radius: 3px; overflow: hidden; background: var(--ac-surface-2); margin-top: 4px; }
+                .ac-app .ac-timeline span { height: 100%; border-right: 1px solid var(--ac-surface); box-sizing: border-box; }
+                .ac-app .ac-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; font-size: 12.5px; color: var(--ac-muted); }
+                .ac-app .ac-empty { padding: 2.5em; text-align: center; color: var(--ac-muted); }
+                .ac-app .ac-form { max-width: 560px; display: flex; flex-direction: column; gap: 18px; padding: 20px; }
+                .ac-app .ac-form label.ac-field { display: flex; flex-direction: column; gap: 5px; }
+                .ac-app .ac-form .desc { color: var(--ac-faint); font-size: 12px; }
+                .ac-app .ac-check { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
+                .ac-app .ac-status { font-size: 12.5px; color: var(--ac-muted); }
+                .ac-app a.ac-link { color: var(--ac-primary); }
+                </style>
+
+                <div class="ac">
+                    <aside class="ac-rail">
+                        <div class="ac-brand">
+                            <span class="ac-glyph"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#14161c" stroke-width="2.4" stroke-linecap="round"><path d="M6 2v16h16M2 6h16v16"/></svg></span>
+                            <div><b>AutoCrop</b><small>Black bars, gone</small></div>
+                        </div>
+                        <nav class="ac-nav" id="acNav">
+                            <a class="active" data-view="overview">Overview</a>
+                            <a data-view="settings">Settings</a>
+                        </nav>
+                    </aside>
+
+                    <main class="ac-main">
+                        <section class="ac-view show" data-view="overview">
+                            <div class="ac-head">
+                                <div><h1>Overview</h1><p>What the scans found in every movie and episode.</p></div>
+                                <button type="button" class="ac-btn primary" id="acScanNow">Scan library now</button>
+                            </div>
+                            <div class="ac-progress" id="acProgress"><span id="acProgressText">Scanning</span><div class="bar"><div class="fill" id="acProgressFill"></div></div></div>
+
+                            <div class="ac-tiles">
+                                <div class="ac-tile"><div class="n" id="acScanned">&ndash;</div><div class="ac-label">Scanned</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-primary);"><div class="n" id="acWithBars">&ndash;</div><div class="ac-label">With bars</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-scene);"><div class="n" id="acPerScene">&ndash;</div><div class="ac-label">Per-scene</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-warn);"><div class="n" id="acPending">&ndash;</div><div class="ac-label">Pending</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-crit);"><div class="n" id="acFailed">&ndash;</div><div class="ac-label">Failed</div></div>
+                            </div>
+
+                            <div class="ac-tools" id="acFilters">
+                                <button type="button" class="ac-chip on" data-filter="">All</button>
+                                <button type="button" class="ac-chip" data-filter="bars">With bars</button>
+                                <button type="button" class="ac-chip" data-filter="per-scene">Per-scene</button>
+                                <button type="button" class="ac-chip" data-filter="no-bars">No bars</button>
+                                <button type="button" class="ac-chip" data-filter="failed">Failed</button>
+                                <input type="search" class="ac-input ac-search" id="acSearch" placeholder="Search titles" aria-label="Search titles" />
+                            </div>
+
+                            <div class="ac-panel">
+                                <table class="ac-table">
+                                    <thead><tr><th>Title</th><th>Frame</th><th>Picture</th><th>Segments</th><th>Scanned</th><th>Status</th><th></th></tr></thead>
+                                    <tbody id="acRows"><tr><td colspan="7" class="ac-empty">Loading&hellip;</td></tr></tbody>
+                                </table>
+                                <div class="ac-pager"><span id="acPageInfo"></span><button type="button" class="ac-btn small" id="acPrev">Previous</button><button type="button" class="ac-btn small" id="acNext">Next</button></div>
+                            </div>
+                        </section>
+
+                        <section class="ac-view" data-view="settings">
+                            <div class="ac-head"><div><h1>Settings</h1><p>Server-wide defaults. Viewers can switch modes for themselves with the <b>c</b> key during playback.</p></div></div>
+                            <form class="ac-panel ac-form" id="acSettings">
+                                <label class="ac-check"><input type="checkbox" id="acEnabled" /><span>Enable AutoCrop<span class="desc" style="display:block;">Scans new items and crops playback in the web player.</span></span></label>
+                                <label class="ac-field"><span class="ac-label">Default mode</span>
+                                    <select class="ac-input" id="acDefaultMode">
+                                        <option value="per-scene">Per scene: follow aspect-ratio changes (IMAX scenes)</option>
+                                        <option value="static">Static: one crop for the whole file</option>
+                                        <option value="off">Off</option>
+                                    </select>
+                                </label>
+                                <label class="ac-field"><span class="ac-label">Minimum bar (%)</span>
+                                    <input class="ac-input" type="number" id="acMinBar" min="0" max="25" step="0.1" />
+                                    <span class="desc">Bars thinner than this share of the width or height are left alone, so edge noise isn't cropped.</span>
+                                </label>
+                                <label class="ac-field"><span class="ac-label">Minimum segment length (s)</span>
+                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" />
+                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture.</span>
+                                </label>
+                                <label class="ac-field"><span class="ac-label">Transition (ms)</span>
+                                    <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
+                                    <span class="desc">How long the zoom takes to follow a scene change; 0 switches instantly.</span>
+                                </label>
+                                <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Changes to the minimum bar or segment length apply to items scanned from now on.</p>
+                                <div><button type="submit" class="ac-btn primary">Save</button> <span class="ac-status" id="acSaveStatus"></span></div>
+                            </form>
+                        </section>
+                    </main>
+                </div>
+
+                <script type="text/javascript">
+                (function () {
+                    var PLUGIN_ID = '582167bd-db8e-4e2f-bec7-5dd11b6d82a2';
+                    var TASK_KEY = 'AutoCropDetectBlackBars';
+                    var PAGE_SIZE = 25;
+                    var root = document.getElementById('autoCropConfigPage');
+                    var state = { filter: '', search: '', start: 0, total: 0, taskId: null, polling: false, searchTimer: null };
+
+                    function $(id) { return document.getElementById(id); }
+
+                    function esc(value) {
+                        return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+                            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                        });
+                    }
+
+                    function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+                    function formatDate(iso) {
+                        var d = new Date(iso);
+                        return isNaN(d.getTime()) ? '' : pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getFullYear() % 100);
+                    }
+
+                    function formatTime(seconds) {
+                        var s = Math.round(seconds);
+                        var h = Math.floor(s / 3600);
+                        return (h ? h + ':' + pad(Math.floor(s / 60) % 60) : Math.floor(s / 60)) + ':' + pad(s % 60);
+                    }
+
+                    function ratio(box) {
+                        return box && box.height ? (box.width / box.height).toFixed(2) + ':1' : '';
+                    }
+
+                    function getJson(path, query) { return ApiClient.getJSON(ApiClient.getUrl(path, query)); }
+
+                    function post(path) { return ApiClient.ajax({ url: ApiClient.getUrl(path), type: 'POST' }); }
+
+                    function loadStats() {
+                        getJson('AutoCrop/Stats').then(function (s) {
+                            $('acScanned').textContent = s.scanned;
+                            $('acWithBars').textContent = s.withBars;
+                            $('acPerScene').textContent = s.perScene;
+                            $('acPending').textContent = s.pending + (s.queued ? ' (' + s.queued + ' queued)' : '');
+                            $('acFailed').textContent = s.failed;
+                        }, function () {});
+                    }
+
+                    // Each segment's width is its share of the running time; taller pictures are lighter.
+                    function timeline(row) {
+                        var segments = row.segments;
+                        if (!segments || segments.length < 2) return '';
+                        var total = segments[segments.length - 1].end || 1;
+                        return '<div class="ac-timeline">' + segments.map(function (s) {
+                            var share = Math.max(0.5, 100 * (s.end - s.start) / total);
+                            var light = Math.round(30 + 45 * s.box.height / row.frameHeight);
+                            var title = formatTime(s.start) + '\u2013' + formatTime(s.end) + ' \u00b7 ' + s.box.width + '\u00d7' + s.box.height + ' (' + ratio(s.box) + ')';
+                            return '<span style="width:' + share.toFixed(2) + '%;background:hsl(258,60%,' + light + '%);" title="' + esc(title) + '"></span>';
+                        }).join('') + '</div>';
+                    }
+
+                    function statusPill(row) {
+                        var labels = { 'bars': 'Bars', 'per-scene': 'Per-scene', 'no-bars': 'No bars', 'failed': 'Failed' };
+                        var title = row.status === 'failed' ? ' title="' + esc(row.error) + '"' : '';
+                        return '<span class="ac-pill ' + esc(row.status) + '"' + title + '>' + esc(labels[row.status] || row.status) + '</span>';
+                    }
+
+                    function renderRow(row) {
+                        var failed = row.status === 'failed';
+                        var picture = failed || !row.crop ? '<span class="ac-dim">\u2013</span>'
+                            : esc(row.crop.width + '\u00d7' + row.crop.height) + ' <span class="ac-dim">\u00b7 ' + esc(ratio(row.crop)) + '</span>';
+                        var segments = failed ? '' : (row.segments ? row.segments.length : 1) + timeline(row);
+                        return '<tr>'
+                            + '<td>' + esc(row.title) + (failed ? '<div class="ac-dim" style="font-size:11.5px;">' + esc(row.error) + '</div>' : '') + '</td>'
+                            + '<td class="ac-mono">' + (failed ? '' : esc(row.frameWidth + '\u00d7' + row.frameHeight)) + '</td>'
+                            + '<td class="ac-mono">' + picture + '</td>'
+                            + '<td class="ac-mono">' + segments + '</td>'
+                            + '<td class="ac-mono">' + esc(formatDate(row.scannedAt)) + '</td>'
+                            + '<td>' + statusPill(row) + '</td>'
+                            + '<td><button type="button" class="ac-btn small" data-rescan="' + esc(row.itemId) + '">Rescan</button></td>'
+                            + '</tr>';
+                    }
+
+                    function loadRows() {
+                        getJson('AutoCrop/Results', { filter: state.filter, search: state.search, startIndex: state.start, limit: PAGE_SIZE }).then(function (page) {
+                            state.total = page.total;
+                            $('acRows').innerHTML = page.items.length
+                                ? page.items.map(renderRow).join('')
+                                : '<tr><td colspan="7" class="ac-empty">Nothing here yet. Scans run nightly, or use \u201cScan library now\u201d.</td></tr>';
+                            var last = Math.min(state.start + PAGE_SIZE, page.total);
+                            $('acPageInfo').textContent = page.total ? (state.start + 1) + '\u2013' + last + ' of ' + page.total : '';
+                            $('acPrev').disabled = state.start === 0;
+                            $('acNext').disabled = last >= page.total;
+                        }, function () {
+                            $('acRows').innerHTML = '<tr><td colspan="7" class="ac-empty">Couldn\u2019t load the scan results.</td></tr>';
+                        });
+                    }
+
+                    function refresh() {
+                        loadStats();
+                        loadRows();
+                    }
+
+                    function findTask() {
+                        return getJson('ScheduledTasks').then(function (tasks) {
+                            var task = tasks.filter(function (t) { return t.Key === TASK_KEY; })[0];
+                            state.taskId = task ? task.Id : null;
+                            return task;
+                        });
+                    }
+
+                    function showProgress(task) {
+                        var running = task && task.State === 'Running';
+                        $('acProgress').className = 'ac-progress' + (running ? ' show' : '');
+                        $('acScanNow').disabled = !!running;
+                        if (running) {
+                            var pct = task.CurrentProgressPercentage || 0;
+                            $('acProgressText').textContent = 'Scanning the library \u00b7 ' + pct.toFixed(1) + '%';
+                            $('acProgressFill').style.width = pct + '%';
+                        }
+                        return running;
+                    }
+
+                    // Poll the task while it runs; refresh the numbers as it goes and once at the end.
+                    function poll() {
+                        if (state.polling || !state.taskId) return;
+                        state.polling = true;
+                        var ticks = 0;
+                        (function step() {
+                            if (!document.documentElement.contains(root)) { state.polling = false; return; }
+                            getJson('ScheduledTasks/' + state.taskId).then(function (task) {
+                                ticks++;
+                                if (showProgress(task)) {
+                                    if (ticks % 5 === 0) refresh();
+                                    setTimeout(step, 1500);
+                                } else {
+                                    state.polling = false;
+                                    refresh();
+                                }
+                            }, function () { state.polling = false; });
+                        })();
+                    }
+
+                    function scanNow() {
+                        $('acScanNow').disabled = true;
+                        findTask().then(function () {
+                            if (!state.taskId) throw new Error('task not found');
+                            return post('ScheduledTasks/Running/' + state.taskId);
+                        }).then(function () {
+                            showProgress({ State: 'Running', CurrentProgressPercentage: 0 });
+                            setTimeout(poll, 500);
+                        }, function () {
+                            $('acScanNow').disabled = false;
+                            Dashboard.alert('Couldn\u2019t start the scan.');
+                        });
+                    }
+
+                    function rescan(button) {
+                        button.disabled = true;
+                        post('AutoCrop/Items/' + encodeURIComponent(button.getAttribute('data-rescan')) + '/Rescan').then(function () {
+                            button.closest('tr').querySelector('td:nth-child(6)').innerHTML = '<span class="ac-pill queued">Queued</span>';
+                            setTimeout(refresh, 15000);
+                        }, function () {
+                            button.disabled = false;
+                        });
+                    }
+
+                    function loadSettings() {
+                        ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
+                            $('acEnabled').checked = c.Enabled !== false;
+                            $('acDefaultMode').value = c.DefaultMode || 'per-scene';
+                            $('acMinBar').value = c.MinimumBarPercent;
+                            $('acMinSegment').value = c.MinimumSegmentSeconds;
+                            $('acTransition').value = c.TransitionMs;
+                        });
+                    }
+
+                    function number(id, fallback) {
+                        var value = parseFloat($(id).value);
+                        return isNaN(value) || value < 0 ? fallback : value;
+                    }
+
+                    function saveSettings(e) {
+                        e.preventDefault();
+                        $('acSaveStatus').textContent = '';
+                        ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
+                            c.Enabled = $('acEnabled').checked;
+                            c.DefaultMode = $('acDefaultMode').value;
+                            c.MinimumBarPercent = number('acMinBar', 1);
+                            c.MinimumSegmentSeconds = number('acMinSegment', 2);
+                            c.TransitionMs = Math.round(number('acTransition', 300));
+                            return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
+                        }).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                            $('acSaveStatus').textContent = 'Saved';
+                        }, function () {
+                            $('acSaveStatus').textContent = 'Couldn\u2019t save';
+                        });
+                    }
+
+                    $('acNav').addEventListener('click', function (e) {
+                        var link = e.target.closest('a[data-view]');
+                        if (!link) return;
+                        var view = link.getAttribute('data-view');
+                        Array.prototype.forEach.call(root.querySelectorAll('[data-view]'), function (el) {
+                            el.classList.toggle(el.tagName === 'A' ? 'active' : 'show', el.getAttribute('data-view') === view);
+                        });
+                    });
+                    $('acFilters').addEventListener('click', function (e) {
+                        var chip = e.target.closest('.ac-chip');
+                        if (!chip) return;
+                        Array.prototype.forEach.call(root.querySelectorAll('.ac-chip'), function (c) { c.classList.toggle('on', c === chip); });
+                        state.filter = chip.getAttribute('data-filter');
+                        state.start = 0;
+                        loadRows();
+                    });
+                    $('acSearch').addEventListener('input', function () {
+                        clearTimeout(state.searchTimer);
+                        state.searchTimer = setTimeout(function () {
+                            state.search = $('acSearch').value;
+                            state.start = 0;
+                            loadRows();
+                        }, 250);
+                    });
+                    $('acRows').addEventListener('click', function (e) {
+                        var button = e.target.closest('button[data-rescan]');
+                        if (button) rescan(button);
+                    });
+                    $('acPrev').addEventListener('click', function () { state.start = Math.max(0, state.start - PAGE_SIZE); loadRows(); });
+                    $('acNext').addEventListener('click', function () { state.start += PAGE_SIZE; loadRows(); });
+                    $('acScanNow').addEventListener('click', scanNow);
+                    $('acSettings').addEventListener('submit', saveSettings);
+
+                    refresh();
+                    loadSettings();
+                    findTask().then(function (task) {
+                        if (showProgress(task)) poll();
+                    }, function () {});
+                })();
+                </script>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
