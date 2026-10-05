@@ -487,6 +487,35 @@ public class CropScannerTests : IDisposable
         Assert.Equal(CropBox.Full(640, 360), result.Crop);
     }
 
+    // ----- one scan per item -----
+
+    [Fact]
+    public async Task ScanAsync_ItemScannedInTheMeantime_IsNotScannedAgain()
+    {
+        var store = Store();
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisVersion = CropAnalyzer.Version;
+
+        // The scanner's ffmpeg doesn't exist: running it would record a failure instead.
+        Assert.Same(result, await Scanner(store).ScanAsync(movie, CancellationToken.None));
+        Assert.Same(result, store.Get(movie.Id));
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_TaskAndQueueOnTheSameItem_ScanItOnce()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var store = Store();
+        var scanner = Scanner(store, ffmpeg);
+        var movie = MovieAt(MakeClip(ffmpeg!, "once.mp4", "yuv420p", (6, 320)));
+
+        var results = await Task.WhenAll(scanner.ScanAsync(movie, CancellationToken.None), scanner.ScanAsync(movie, CancellationToken.None));
+
+        Assert.Same(results[0], results[1]);
+        Assert.Equal(AnalysisSources.Keyframes, results[0].AnalysisSource);
+    }
+
     // ----- files with too few keyframes -----
 
     [SkippableFact]

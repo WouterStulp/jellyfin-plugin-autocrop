@@ -138,7 +138,7 @@ The keyframes make the analysis cheap to redo:
 
 - The scheduled task scans everything that has no result yet or whose file changed, and drops results for items that left the library.
 - New or updated movies and episodes are queued into one background worker after a 30-second settle delay, so files that are still being copied aren't measured early.
-- Only one ffmpeg runs at a time, at idle priority (nice 19 on Linux), and cancelling the task stops it.
+- Only one ffmpeg runs at a time, at idle priority (nice 19 on Linux), and cancelling the task stops it. When the task and the queue pick the same item, the second one finds a current result and skips it, and an item waits in the queue only once.
 - Decoding runs on the GPU Jellyfin uses for transcoding (VAAPI for Intel QSV/VAAPI on Linux, CUDA for NVENC, VideoToolbox on macOS). Decoding is bit-exact, so the result is identical to the CPU; on an Intel N-series/Pentium iGPU HEVC scans about 3× faster. If the GPU can't decode a file, it is measured again on the CPU. Turn it off with "Decode on the GPU" in the settings.
 - Virtual items, disc images and folders, `.strm` files and remote paths are skipped.
 

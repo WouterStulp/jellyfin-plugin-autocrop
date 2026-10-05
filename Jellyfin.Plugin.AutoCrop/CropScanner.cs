@@ -211,6 +211,13 @@ public class CropScanner
         await _oneAtATime.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // The scheduled task and the queue can pick the same item; the second one finds it done.
+            if (_store.GetCurrent(item.Id, item.Path) is { AnalysisVersion: >= CropAnalyzer.Version } current)
+            {
+                _logger.LogDebug("AutoCrop: {Name} was scanned in the meantime", item.Name);
+                return current;
+            }
+
             var result = await MeasureAsync(item, cancellationToken).ConfigureAwait(false);
             _store.Set(result);
             return result;
