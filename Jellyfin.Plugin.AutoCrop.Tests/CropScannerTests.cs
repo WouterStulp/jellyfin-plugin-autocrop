@@ -486,4 +486,30 @@ public class CropScannerTests : IDisposable
         Assert.Equal(AnalysisSources.Keyframes, result.AnalysisSource);
         Assert.Equal(CropBox.Full(640, 360), result.Crop);
     }
+
+    // ----- files with too few keyframes -----
+
+    [SkippableFact]
+    public async Task EndToEnd_SparseKeyframes_AreMeasuredEveryTwoSeconds()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+
+        // Only the first frame is a keyframe: one sample in 130 seconds.
+        var oneKeyframe = new[] { "-g", "100000", "-keyint_min", "100000", "-sc_threshold", "0", "-x264-params", "scenecut=0" };
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "sparse.mp4", "yuv420p", oneKeyframe, (130, 320)));
+
+        Assert.Equal(AnalysisSources.Frames, result.AnalysisSource);
+        Assert.InRange(result.Keyframes, 60, 70);
+        AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
+    }
+
+    [Fact]
+    public void Arguments_EveryTwoSeconds_DecodesEveryFrame()
+    {
+        var args = CropScanner.Arguments("/media/film.mkv", everyTwoSeconds: true);
+
+        Assert.DoesNotContain("-skip_frame", args);
+        Assert.StartsWith("select=", args[args.ToList().IndexOf("-vf") + 1]);
+    }
 }

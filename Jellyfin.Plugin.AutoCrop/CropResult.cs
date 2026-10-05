@@ -70,4 +70,7 @@ public static class AnalysisSources
     public const string Trickplay = "trickplay";
 
     public const string Keyframes = "keyframes";
+
+    /// <summary>A frame every 2 seconds, for files with too few keyframes to measure.</summary>
+    public const string Frames = "frames";
 }

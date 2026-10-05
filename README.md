@@ -33,7 +33,7 @@ AutoCrop only acts when Jellyfin's own aspect ratio setting is **Auto**. Choose 
   - Text subtitles drawn by Jellyfin as an overlay (subtitle styling "Custom") aren't affected.
   - Native browser subtitles (styling "Native", the default in most desktop browsers) would zoom along with the video, so AutoCrop moves them into the part of the picture that is still on screen.
   - ASS/SSA and PGS/VobSub subtitles are drawn on canvases beside the video. AutoCrop keeps them over the whole frame as Jellyfin would show it without zoom. They stay readable, but positioned signs and karaoke won't line up exactly with the zoomed picture.
-- **Keyframes only.** Detection decodes keyframes, not every frame (a 50-minute 1080p episode takes about 45 seconds on a NAS). A shape change that starts and ends between two keyframes isn't seen. Changes at a scene cut usually start a new keyframe, and the stretch between two keyframes around a change always gets the larger picture.
+- **Keyframes only.** Detection decodes keyframes, not every frame (a 50-minute 1080p episode takes about 45 seconds on a NAS). Files with fewer than one keyframe per minute are measured on a frame every 2 seconds instead (see How it works). A shape change that starts and ends between two keyframes isn't seen. Changes at a scene cut usually start a new keyframe, and the stretch between two keyframes around a change always gets the larger picture.
 - **Very dark scenes** look like smaller pictures to ffmpeg. Per scene, a keyframe only ever picks one of the file's real picture shapes (see How it works), so a dark shot or a title card stays in its scene's shape. A dark shot in a taller (IMAX) scene can fit the narrower shape; a stretch of those shorter than the minimum segment length is merged back into the scene.
 
 ## Install
@@ -51,7 +51,7 @@ Requires Jellyfin 10.11.9 or later, including 12.x. ffmpeg is the one Jellyfin a
 
 **Overview**
 - Counts: scanned, with bars, per scene (more than one segment), by trickplay (settled from the thumbnails without decoding the file), pending (not scanned yet), failed.
-- A table of every scanned item: title, frame size, picture size and aspect ratio (e.g. 1920×960 · 2.00:1), number of segments with a small timeline of where the shape changes, scan date (dd-mm-yy) with what it was measured on (`trickplay` or `keyframes`), and status.
+- A table of every scanned item: title, frame size, picture size and aspect ratio (e.g. 1920×960 · 2.00:1), number of segments with a small timeline of where the shape changes, scan date (dd-mm-yy) with what it was measured on (`trickplay`, `keyframes` or `frames`), and status.
 - Search, filters (all / with bars / per scene / no bars / failed), paging, and a **Rescan** button per row.
 - Failed scans show ffmpeg's reason. They aren't retried every night; use Rescan, or they're retried automatically once the file changes.
 - **Scan library now** runs the scheduled task and shows its progress.
@@ -103,6 +103,14 @@ ffmpeg -hide_banner -nostats -nostdin -skip_frame nokey -i <file> -map 0:V:0 \
 - `limit=0.094` is given as a fraction, so ffmpeg scales it to the bit depth. With the usual absolute `limit=24`, a 10-bit file's black (64 out of 1023) counts as picture and nothing is ever cropped. That was checked against a generated 10-bit clip.
 - `skip=0` keeps the first keyframes, which cropdetect skips by default.
 - `-map 0:V:0` picks the main video stream, never embedded cover art.
+
+Some Blu-ray remuxes flag hardly any keyframes (three in a 24-minute episode), and a union of three frames proves nothing. When the keyframe pass gives fewer than one keyframe per minute of a file of at least 2 minutes, the file is measured again with full decoding (on the GPU when enabled) and a frame every 2 seconds:
+
+```
+-vf "select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',cropdetect=limit=0.094:round=2:reset=1:skip=0"
+```
+
+The analysis is the same; the result's source is `frames` instead of `keyframes`.
 
 From those keyframes the plugin builds:
 
@@ -164,7 +172,7 @@ docker run --rm -v "$PWD":/src -w /src mcr.microsoft.com/dotnet/sdk:9.0 dotnet t
 node test/crop-math.test.js
 ```
 
-The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, and an unreadable file. The trickplay tests make sheets from generated clips the way Jellyfin does (`fps=1/10`, 320 px wide, `tile=10x10`) in a folder laid out like Jellyfin's: a clean clip is settled by trickplay, a clip with bars and a shape-switching clip get the keyframe scan, and so do missing and stale trickplay. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
+The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, a clip whose only keyframe is the first frame, and an unreadable file. The trickplay tests make sheets from generated clips the way Jellyfin does (`fps=1/10`, 320 px wide, `tile=10x10`) in a folder laid out like Jellyfin's: a clean clip is settled by trickplay, a clip with bars and a shape-switching clip get the keyframe scan, and so do missing and stale trickplay. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
 
 `Jellyfin.Plugin.AutoCrop.Tests/Fixtures` holds the keyframe output of the plugin's ffmpeg command on ten real films and episodes (IMAX releases that switch shape, a scope-only release, and episodes with dark scenes and credits). The analysis is tested on them: one segment for the episodes, the right mattes for the IMAX films, and no keyframe's picture ever outside its segment.
 

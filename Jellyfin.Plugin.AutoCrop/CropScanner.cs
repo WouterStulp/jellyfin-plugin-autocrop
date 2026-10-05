@@ -28,6 +28,9 @@ public class CropScanner
     private readonly IMediaEncoder _mediaEncoder;
     private const string Cropdetect = "cropdetect=limit=0.094:round=2:reset=1:skip=0";
 
+    // The first frame, then every frame at least 2 s after the last one picked.
+    private const string EveryTwoSeconds = @"select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)'";
+
     private readonly IConfigurationManager _configurationManager;
     private readonly ITrickplayManager _trickplayManager;
     private readonly CropStore _store;
@@ -136,22 +139,28 @@ public class CropScanner
         return (reanalysed, needScan);
     }
 
-    internal static IReadOnlyList<string> Arguments(string path, IReadOnlyList<string>? hardwareDecoding = null) => new[]
-    {
-        "-hide_banner", "-nostats", "-nostdin",
-        "-skip_frame", "nokey",
-    }.Concat(hardwareDecoding ?? Array.Empty<string>()).Concat(new[]
-    {
-        "-i", path,
-        // V (capital) skips cover art and other attached pictures.
-        "-map", "0:V:0",
-        // A fractional limit is scaled to the pixel format's bit depth: 24/255 for 8-bit, and the
-        // same relative level for 10-bit, whose black sits at 64 rather than 16. skip=0 keeps the
-        // first keyframes, which cropdetect would otherwise ignore.
-        "-vf", Cropdetect,
-        "-an", "-sn", "-dn",
-        "-f", "null", "-",
-    }).ToArray();
+    /// <summary>
+    /// The exact scan: every keyframe, or with <paramref name="everyTwoSeconds"/> every frame decoded
+    /// and one measured per 2 seconds, for files with too few keyframes.
+    /// </summary>
+    internal static IReadOnlyList<string> Arguments(
+        string path, IReadOnlyList<string>? hardwareDecoding = null, bool everyTwoSeconds = false)
+        => new[] { "-hide_banner", "-nostats", "-nostdin" }
+            .Concat(everyTwoSeconds ? Array.Empty<string>() : new[] { "-skip_frame", "nokey" })
+            .Concat(hardwareDecoding ?? Array.Empty<string>())
+            .Concat(new[]
+            {
+                "-i", path,
+                // V (capital) skips cover art and other attached pictures.
+                "-map", "0:V:0",
+                // A fractional limit is scaled to the pixel format's bit depth: 24/255 for 8-bit, and the
+                // same relative level for 10-bit, whose black sits at 64 rather than 16. skip=0 keeps the
+                // first keyframes, which cropdetect would otherwise ignore.
+                "-vf", everyTwoSeconds ? $"{EveryTwoSeconds},{Cropdetect}" : Cropdetect,
+                "-an", "-sn", "-dn",
+                "-f", "null", "-",
+            })
+            .ToArray();
 
     /// <summary>
     /// One pass over the trickplay sheets 0.jpg, 1.jpg, ... in a folder: each sheet is split into its
@@ -249,8 +258,20 @@ public class CropScanner
         var hardware = Plugin.Instance?.Configuration.HardwareDecoding == false
             ? null
             : HardwareDecodingArguments(_configurationManager.GetConfiguration("encoding") as EncodingOptions);
-        var (parser, error) = await DetectAsync(path, hardware, cancellationToken).ConfigureAwait(false);
+        var (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: false, cancellationToken).ConfigureAwait(false);
         result.AnalysisSource = AnalysisSources.Keyframes;
+
+        // Some remuxes flag only a handful of keyframes; a union of three frames proves nothing.
+        var duration = parser.DurationSeconds ?? 0;
+        if (error == null && duration >= 120 && parser.Samples.Count < duration / 60)
+        {
+            _logger.LogInformation(
+                "AutoCrop: only {Keyframes} keyframes in {Minutes:0} minutes of {Path}, measuring a frame every 2 seconds",
+                parser.Samples.Count, duration / 60, path);
+            (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: true, cancellationToken).ConfigureAwait(false);
+            result.AnalysisSource = AnalysisSources.Frames;
+        }
+
         result.Error = error;
         var width = parser.FrameWidth ?? item.Width;
         var height = parser.FrameHeight ?? item.Height;
@@ -275,17 +296,17 @@ public class CropScanner
     }
 
     private async Task<(CropdetectParser Parser, string? Error)> DetectAsync(
-        string path, IReadOnlyList<string>? hardware, CancellationToken cancellationToken)
+        string path, IReadOnlyList<string>? hardware, bool everyTwoSeconds, CancellationToken cancellationToken)
     {
         var parser = new CropdetectParser();
-        var (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, hardware), parser, cancellationToken).ConfigureAwait(false);
+        var (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, hardware, everyTwoSeconds), parser, cancellationToken).ConfigureAwait(false);
 
         // A GPU that can't decode this codec or profile must not fail the scan: measure it on the CPU.
         if (hardware != null && (exitCode != 0 || parser.Samples.Count == 0))
         {
             _logger.LogInformation("AutoCrop: GPU decoding failed for {Path} ({LastLine}), measuring on the CPU", path, lastLine);
             parser = new CropdetectParser();
-            (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path), parser, cancellationToken).ConfigureAwait(false);
+            (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, null, everyTwoSeconds), parser, cancellationToken).ConfigureAwait(false);
         }
 
         var error = exitCode != 0 ? $"ffmpeg exited with code {exitCode}: {lastLine}"
