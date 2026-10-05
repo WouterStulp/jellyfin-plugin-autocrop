@@ -5,10 +5,12 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
@@ -21,13 +23,16 @@ namespace Jellyfin.Plugin.AutoCrop;
 public class CropScanner
 {
     private readonly IMediaEncoder _mediaEncoder;
+    private readonly IConfigurationManager _configurationManager;
     private readonly CropStore _store;
     private readonly ILogger<CropScanner> _logger;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
 
-    public CropScanner(IMediaEncoder mediaEncoder, CropStore store, ILogger<CropScanner> logger)
+    public CropScanner(
+        IMediaEncoder mediaEncoder, IConfigurationManager configurationManager, CropStore store, ILogger<CropScanner> logger)
     {
         _mediaEncoder = mediaEncoder;
+        _configurationManager = configurationManager;
         _store = store;
         _logger = logger;
     }
@@ -47,10 +52,12 @@ public class CropScanner
     public bool NeedsScan(BaseItem item)
         => IsEligible(item) && File.Exists(item.Path) && _store.GetCurrent(item.Id, item.Path) == null;
 
-    internal static IReadOnlyList<string> Arguments(string path) => new[]
+    internal static IReadOnlyList<string> Arguments(string path, IReadOnlyList<string>? hardwareDecoding = null) => new[]
     {
         "-hide_banner", "-nostats", "-nostdin",
         "-skip_frame", "nokey",
+    }.Concat(hardwareDecoding ?? Array.Empty<string>()).Concat(new[]
+    {
         "-i", path,
         // V (capital) skips cover art and other attached pictures.
         "-map", "0:V:0",
@@ -60,7 +67,30 @@ public class CropScanner
         "-vf", "cropdetect=limit=0.094:round=2:reset=1:skip=0",
         "-an", "-sn", "-dn",
         "-f", "null", "-",
-    };
+    }).ToArray();
+
+    /// <summary>
+    /// Decoder arguments for the GPU Jellyfin itself is set up to use. Decoding is bit-exact, so the
+    /// GPU finds the same picture as the CPU, just faster (3x on HEVC with an Intel iGPU). Frames come
+    /// back to system memory for cropdetect. On Linux, QSV sits on top of VAAPI, so both use VAAPI.
+    /// </summary>
+    internal static IReadOnlyList<string>? HardwareDecodingArguments(EncodingOptions? encoding)
+    {
+        if (encoding == null)
+            return null;
+
+        static string Device(string? configured) => string.IsNullOrWhiteSpace(configured) ? "/dev/dri/renderD128" : configured;
+
+        return encoding.HardwareAccelerationType switch
+        {
+            HardwareAccelerationType.qsv when OperatingSystem.IsLinux()
+                => new[] { "-hwaccel", "vaapi", "-hwaccel_device", Device(encoding.QsvDevice ?? encoding.VaapiDevice) },
+            HardwareAccelerationType.vaapi => new[] { "-hwaccel", "vaapi", "-hwaccel_device", Device(encoding.VaapiDevice) },
+            HardwareAccelerationType.nvenc => new[] { "-hwaccel", "cuda" },
+            HardwareAccelerationType.videotoolbox => new[] { "-hwaccel", "videotoolbox" },
+            _ => null,
+        };
+    }
 
     public async Task<CropResult> ScanAsync(BaseItem item, CancellationToken cancellationToken)
     {
@@ -102,7 +132,18 @@ public class CropScanner
 
         var watch = Stopwatch.StartNew();
         var parser = new CropdetectParser();
-        var (exitCode, lastLine) = await RunFfmpegAsync(path, parser, cancellationToken).ConfigureAwait(false);
+        var hardware = Plugin.Instance?.Configuration.HardwareDecoding == false
+            ? null
+            : HardwareDecodingArguments(_configurationManager.GetConfiguration("encoding") as EncodingOptions);
+        var (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, hardware), parser, cancellationToken).ConfigureAwait(false);
+
+        // A GPU that can't decode this codec or profile must not fail the scan: measure it on the CPU.
+        if (hardware != null && (exitCode != 0 || parser.Samples.Count == 0))
+        {
+            _logger.LogInformation("AutoCrop: GPU decoding failed for {Path} ({LastLine}), measuring on the CPU", path, lastLine);
+            parser = new CropdetectParser();
+            (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path), parser, cancellationToken).ConfigureAwait(false);
+        }
 
         if (exitCode != 0)
             result.Error = $"ffmpeg exited with code {exitCode}: {lastLine}";
@@ -137,7 +178,7 @@ public class CropScanner
     }
 
     private async Task<(int ExitCode, string LastLine)> RunFfmpegAsync(
-        string path, CropdetectParser parser, CancellationToken cancellationToken)
+        IReadOnlyList<string> arguments, CropdetectParser parser, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo(_mediaEncoder.EncoderPath)
         {
@@ -145,7 +186,7 @@ public class CropScanner
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        foreach (var argument in Arguments(path))
+        foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
 
         using var process = new Process { StartInfo = startInfo };

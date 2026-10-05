@@ -23,7 +23,7 @@ public class ScanQueueTests : IAsyncLifetime
     {
         TestPlugin.Create(_dir);
         var store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        var scanner = new CropScanner(Substitute.For<IMediaEncoder>(), store, NullLogger<CropScanner>.Instance);
+        var scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), store, NullLogger<CropScanner>.Instance);
         _queue = new ScanQueue(_library, scanner, NullLogger<ScanQueue>.Instance)
         {
             SettleDelay = TimeSpan.Zero,

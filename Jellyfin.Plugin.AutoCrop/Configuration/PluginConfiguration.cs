@@ -15,6 +15,9 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public int TransitionMs { get; set; } = 300;
 
+    /// <summary>Decode on the GPU Jellyfin is set up for (Dashboard > Playback > Transcoding); the CPU is the fallback.</summary>
+    public bool HardwareDecoding { get; set; } = true;
+
     /// <summary>Kill switch for the index.html rewrite (XML only), in case it ever clashes with another plugin.</summary>
     public bool DisableScriptMiddleware { get; set; }
 }
