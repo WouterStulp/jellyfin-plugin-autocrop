@@ -80,7 +80,7 @@ public sealed class ScanQueue : IHostedService, IDisposable
         // results that were made before keyframes were kept.
         try
         {
-            foreach (var itemId in _scanner.Reanalyse(outdatedOnly: true).WithoutSamples)
+            foreach (var itemId in _scanner.Reanalyse(outdatedOnly: true).NeedScan)
                 Enqueue(itemId);
         }
         catch (Exception ex)

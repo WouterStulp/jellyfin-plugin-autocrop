@@ -22,6 +22,9 @@ public static class CropAnalyzer
     /// </summary>
     public const int Version = 2;
 
+    /// <summary>Fewer trickplay thumbnails with picture than this prove nothing.</summary>
+    internal const int MinimumThumbnails = 20;
+
     /// <summary>
     /// The whole-file picture area: the union over every keyframe that isn't fully black. A row or
     /// column that is black in all of them is a burned-in bar; one full-frame shot means no crop.
@@ -35,6 +38,23 @@ public static class CropAnalyzer
         return union == null
             ? CropBox.Full(frameWidth, frameHeight)
             : DropThinBars(union, frameWidth, frameHeight, minimumBarPercent);
+    }
+
+    /// <summary>
+    /// Whether trickplay thumbnails prove there is nothing to crop: together they show picture in
+    /// every row and column of the thumbnail, and no letterbox or pillarbox recurs in enough of them
+    /// (5%, at least 5) to be a per-scene matte. This only ever concludes "no crop"; every crop comes
+    /// from the exact scan.
+    /// </summary>
+    public static bool ShowsNoBars(IReadOnlyList<KeyframeSample> thumbnails, int width, int height)
+    {
+        var boxes = thumbnails.Select(s => s.Box).OfType<CropBox>().ToList();
+        if (boxes.Count < MinimumThumbnails || !boxes.Aggregate((a, b) => a.Union(b)).Contains(CropBox.Full(width, height)))
+            return false;
+
+        // One thumbnail pixel of tolerance: that is about 6 video pixels, under the 1% minimum bar.
+        var options = new AnalyzerOptions(0, 0, MinimumMatteShare: 0.05, MinimumMatteKeyframes: 5);
+        return Mattes(boxes, 1, 1, options).Count == 1;
     }
 
     /// <summary>

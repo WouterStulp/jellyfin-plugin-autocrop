@@ -11,6 +11,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Controller.Trickplay;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
@@ -18,22 +19,34 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Plugin.AutoCrop;
 
 /// <summary>
-/// Measures the picture area of a file with one ffmpeg cropdetect pass over all of its keyframes.
-/// One scan at a time across the scheduled task and the new-item queue, so a NAS isn't flooded.
+/// Measures the picture area of a file with one ffmpeg cropdetect pass over all of its keyframes,
+/// unless Jellyfin's trickplay thumbnails already show there are no bars. One scan at a time across
+/// the scheduled task and the new-item queue, so a NAS isn't flooded.
 /// </summary>
 public class CropScanner
 {
     private readonly IMediaEncoder _mediaEncoder;
+    private const string Cropdetect = "cropdetect=limit=0.094:round=2:reset=1:skip=0";
+
+    // The first frame, then every frame at least 2 s after the last one picked.
+    private const string EveryTwoSeconds = @"select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)'";
+
     private readonly IConfigurationManager _configurationManager;
+    private readonly ITrickplayManager _trickplayManager;
     private readonly CropStore _store;
     private readonly ILogger<CropScanner> _logger;
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
 
     public CropScanner(
-        IMediaEncoder mediaEncoder, IConfigurationManager configurationManager, CropStore store, ILogger<CropScanner> logger)
+        IMediaEncoder mediaEncoder,
+        IConfigurationManager configurationManager,
+        ITrickplayManager trickplayManager,
+        CropStore store,
+        ILogger<CropScanner> logger)
     {
         _mediaEncoder = mediaEncoder;
         _configurationManager = configurationManager;
+        _trickplayManager = trickplayManager;
         _store = store;
         _logger = logger;
     }
@@ -78,19 +91,38 @@ public class CropScanner
     /// <summary>
     /// Recomputes scan results from their stored keyframes with the current analysis and settings,
     /// without ffmpeg. With <paramref name="outdatedOnly"/>, only results from an older analysis.
-    /// Returns how many were recomputed and the items that have no stored keyframes.
+    /// Results settled by trickplay are checked against the same rule again; one that no longer passes
+    /// is dropped, so it gets the exact scan. Returns how many were recomputed and the items that need
+    /// a scan: those without stored keyframes and the dropped trickplay results.
     /// </summary>
-    public (int Reanalysed, IReadOnlyList<Guid> WithoutSamples) Reanalyse(bool outdatedOnly)
+    public (int Reanalysed, IReadOnlyList<Guid> NeedScan) Reanalyse(bool outdatedOnly)
     {
         var options = Options();
-        var updates = new List<(CropResult Current, CropResult Updated)>();
-        var withoutSamples = new List<Guid>();
+        var updates = new List<(CropResult Current, CropResult? Updated)>();
+        var needScan = new List<Guid>();
         foreach (var result in _store.All().Where(r => !r.Failed && (!outdatedOnly || r.AnalysisVersion < CropAnalyzer.Version)))
         {
             var stored = _store.GetSamples(result.ItemId);
+            if (result.AnalysisSource == AnalysisSources.Trickplay)
+            {
+                if (stored is { ThumbnailSize: { } size } && CropAnalyzer.ShowsNoBars(stored.Value.Samples, size.Width, size.Height))
+                {
+                    var still = result.Copy();
+                    still.AnalysisVersion = CropAnalyzer.Version;
+                    updates.Add((result, still));
+                }
+                else
+                {
+                    updates.Add((result, null));
+                    needScan.Add(result.ItemId);
+                }
+
+                continue;
+            }
+
             if (stored == null)
             {
-                withoutSamples.Add(result.ItemId);
+                needScan.Add(result.ItemId);
                 continue;
             }
 
@@ -100,28 +132,56 @@ public class CropScanner
         }
 
         _store.Replace(updates);
-        if (updates.Count > 0 || withoutSamples.Count > 0)
-            _logger.LogInformation("AutoCrop re-analysed {Count} result(s); {Missing} have no stored keyframes", updates.Count, withoutSamples.Count);
+        var reanalysed = updates.Count(u => u.Updated != null);
+        if (updates.Count > 0 || needScan.Count > 0)
+            _logger.LogInformation("AutoCrop re-analysed {Count} result(s); {Missing} need a scan", reanalysed, needScan.Count);
 
-        return (updates.Count, withoutSamples);
+        return (reanalysed, needScan);
     }
 
-    internal static IReadOnlyList<string> Arguments(string path, IReadOnlyList<string>? hardwareDecoding = null) => new[]
+    /// <summary>
+    /// The exact scan: every keyframe, or with <paramref name="everyTwoSeconds"/> every frame decoded
+    /// and one measured per 2 seconds, for files with too few keyframes.
+    /// </summary>
+    internal static IReadOnlyList<string> Arguments(
+        string path, IReadOnlyList<string>? hardwareDecoding = null, bool everyTwoSeconds = false)
+        => new[] { "-hide_banner", "-nostats", "-nostdin" }
+            .Concat(everyTwoSeconds ? Array.Empty<string>() : new[] { "-skip_frame", "nokey" })
+            .Concat(hardwareDecoding ?? Array.Empty<string>())
+            .Concat(new[]
+            {
+                "-i", path,
+                // V (capital) skips cover art and other attached pictures.
+                "-map", "0:V:0",
+                // A fractional limit is scaled to the pixel format's bit depth: 24/255 for 8-bit, and the
+                // same relative level for 10-bit, whose black sits at 64 rather than 16. skip=0 keeps the
+                // first keyframes, which cropdetect would otherwise ignore.
+                "-vf", everyTwoSeconds ? $"{EveryTwoSeconds},{Cropdetect}" : Cropdetect,
+                "-an", "-sn", "-dn",
+                "-f", "null", "-",
+            })
+            .ToArray();
+
+    /// <summary>
+    /// One pass over the trickplay sheets 0.jpg, 1.jpg, ... in a folder: each sheet is split into its
+    /// thumbnails, which cropdetect measures in order.
+    /// </summary>
+    internal static IReadOnlyList<string> TrickplayArguments(string directory, int tileWidth, int tileHeight) => new[]
     {
         "-hide_banner", "-nostats", "-nostdin",
-        "-skip_frame", "nokey",
-    }.Concat(hardwareDecoding ?? Array.Empty<string>()).Concat(new[]
-    {
-        "-i", path,
-        // V (capital) skips cover art and other attached pictures.
-        "-map", "0:V:0",
-        // A fractional limit is scaled to the pixel format's bit depth: 24/255 for 8-bit, and the
-        // same relative level for 10-bit, whose black sits at 64 rather than 16. skip=0 keeps the
-        // first keyframes, which cropdetect would otherwise ignore.
-        "-vf", "cropdetect=limit=0.094:round=2:reset=1:skip=0",
-        "-an", "-sn", "-dn",
+        "-f", "image2", "-framerate", "1", "-start_number", "0",
+        "-i", Path.Combine(directory.Replace("%", "%%", StringComparison.Ordinal), "%d.jpg"),
+        "-vf", $"untile={tileWidth}x{tileHeight},{Cropdetect}",
         "-f", "null", "-",
-    }).ToArray();
+    };
+
+    /// <summary>
+    /// Trickplay made for an earlier version of the file can't be trusted: its thumbnails must cover
+    /// the runtime to within 10% and 60 seconds.
+    /// </summary>
+    internal static bool TrickplayMatchesRuntime(int thumbnailCount, int intervalMs, double runtimeSeconds)
+        => runtimeSeconds > 0
+            && Math.Abs((thumbnailCount * intervalMs / 1000.0) - runtimeSeconds) <= Math.Min(60, runtimeSeconds * 0.1);
 
     /// <summary>
     /// Decoder arguments for the GPU Jellyfin itself is set up to use. Decoding is bit-exact, so the
@@ -151,6 +211,13 @@ public class CropScanner
         await _oneAtATime.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            // The scheduled task and the queue can pick the same item; the second one finds it done.
+            if (_store.GetCurrent(item.Id, item.Path) is { AnalysisVersion: >= CropAnalyzer.Version } current)
+            {
+                _logger.LogDebug("AutoCrop: {Name} was scanned in the meantime", item.Name);
+                return current;
+            }
+
             var result = await MeasureAsync(item, cancellationToken).ConfigureAwait(false);
             _store.Set(result);
             return result;
@@ -186,25 +253,33 @@ public class CropScanner
         }
 
         var watch = Stopwatch.StartNew();
-        var parser = new CropdetectParser();
+        if ((Plugin.Instance?.Configuration.UseTrickplay ?? true)
+            && await TrickplayShowsNoBarsAsync(item, result, cancellationToken).ConfigureAwait(false))
+        {
+            _logger.LogInformation(
+                "AutoCrop scanned {Name}: no bars in {Thumbnails} trickplay thumbnails in {Seconds:0.0}s, skipped the keyframe scan",
+                item.Name, result.Keyframes, watch.Elapsed.TotalSeconds);
+            return result;
+        }
+
         var hardware = Plugin.Instance?.Configuration.HardwareDecoding == false
             ? null
             : HardwareDecodingArguments(_configurationManager.GetConfiguration("encoding") as EncodingOptions);
-        var (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, hardware), parser, cancellationToken).ConfigureAwait(false);
+        var (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: false, cancellationToken).ConfigureAwait(false);
+        result.AnalysisSource = AnalysisSources.Keyframes;
 
-        // A GPU that can't decode this codec or profile must not fail the scan: measure it on the CPU.
-        if (hardware != null && (exitCode != 0 || parser.Samples.Count == 0))
+        // Some remuxes flag only a handful of keyframes; a union of three frames proves nothing.
+        var duration = parser.DurationSeconds ?? 0;
+        if (error == null && duration >= 120 && parser.Samples.Count < duration / 60)
         {
-            _logger.LogInformation("AutoCrop: GPU decoding failed for {Path} ({LastLine}), measuring on the CPU", path, lastLine);
-            parser = new CropdetectParser();
-            (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path), parser, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation(
+                "AutoCrop: only {Keyframes} keyframes in {Minutes:0} minutes of {Path}, measuring a frame every 2 seconds",
+                parser.Samples.Count, duration / 60, path);
+            (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: true, cancellationToken).ConfigureAwait(false);
+            result.AnalysisSource = AnalysisSources.Frames;
         }
 
-        if (exitCode != 0)
-            result.Error = $"ffmpeg exited with code {exitCode}: {lastLine}";
-        else if (parser.Samples.Count == 0)
-            result.Error = "ffmpeg reported no cropdetect output";
-
+        result.Error = error;
         var width = parser.FrameWidth ?? item.Width;
         var height = parser.FrameHeight ?? item.Height;
         if (result.Error == null && (width <= 0 || height <= 0))
@@ -222,9 +297,109 @@ public class CropScanner
         _store.SetSamples(item.Id, parser.DurationSeconds ?? 0, parser.Samples);
 
         _logger.LogInformation(
-            "AutoCrop scanned {Name}: {Keyframes} keyframes in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
-            item.Name, result.Keyframes, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
+            "AutoCrop scanned {Name}: {Keyframes} {Source} in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
+            item.Name, result.Keyframes, result.AnalysisSource, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
         return result;
+    }
+
+    private async Task<(CropdetectParser Parser, string? Error)> DetectAsync(
+        string path, IReadOnlyList<string>? hardware, bool everyTwoSeconds, CancellationToken cancellationToken)
+    {
+        var parser = new CropdetectParser();
+        var (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, hardware, everyTwoSeconds), parser, cancellationToken).ConfigureAwait(false);
+
+        // A GPU that can't decode this codec or profile must not fail the scan: measure it on the CPU.
+        if (hardware != null && (exitCode != 0 || parser.Samples.Count == 0))
+        {
+            _logger.LogInformation("AutoCrop: GPU decoding failed for {Path} ({LastLine}), measuring on the CPU", path, lastLine);
+            parser = new CropdetectParser();
+            (exitCode, lastLine) = await RunFfmpegAsync(Arguments(path, null, everyTwoSeconds), parser, cancellationToken).ConfigureAwait(false);
+        }
+
+        var error = exitCode != 0 ? $"ffmpeg exited with code {exitCode}: {lastLine}"
+            : parser.Samples.Count == 0 ? "ffmpeg reported no cropdetect output"
+            : null;
+        return (parser, error);
+    }
+
+    /// <summary>
+    /// Settles the item from its trickplay thumbnails when they prove there is nothing to crop, and
+    /// fills in the result. False for anything else (bars, possible mattes, no or stale trickplay, a
+    /// failed ffmpeg), which then gets the exact scan.
+    /// </summary>
+    private async Task<bool> TrickplayShowsNoBarsAsync(BaseItem item, CropResult result, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var trickplay = await TrickplayThumbnailsAsync(item, result.FileModifiedUtc, cancellationToken).ConfigureAwait(false);
+            if (trickplay is not ({ } thumbnails, var width, var height)
+                || item.Width <= 0
+                || item.Height <= 0
+                || !CropAnalyzer.ShowsNoBars(thumbnails, width, height))
+                return false;
+
+            result.FrameWidth = item.Width;
+            result.FrameHeight = item.Height;
+            result.Crop = CropBox.Full(item.Width, item.Height);
+            result.Segments = null;
+            result.Keyframes = thumbnails.Count;
+            result.AnalysisSource = AnalysisSources.Trickplay;
+            _store.SetSamples(item.Id, TimeSpan.FromTicks(item.RunTimeTicks ?? 0).TotalSeconds, thumbnails, (width, height));
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Also a Jellyfin whose trickplay API differs from the SDK: the exact scan always works.
+            _logger.LogWarning("AutoCrop could not read the trickplay of {Path}: {Message}", item.Path, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The thumbnails of the largest trickplay resolution, at thumbnail scale, timed by their index,
+    /// with the thumbnail size. Null when there is no complete, current trickplay.
+    /// </summary>
+    private async Task<(IReadOnlyList<KeyframeSample> Thumbnails, int Width, int Height)?> TrickplayThumbnailsAsync(
+        BaseItem item, DateTime fileModifiedUtc, CancellationToken cancellationToken)
+    {
+        var resolutions = await _trickplayManager.GetTrickplayResolutions(item.Id).ConfigureAwait(false);
+        var info = resolutions?.Values.MaxBy(i => i.Width);
+        if (info is not { ThumbnailCount: > 0, Interval: > 0, TileWidth: > 0, TileHeight: > 0 })
+            return null;
+
+        var runtime = TimeSpan.FromTicks(item.RunTimeTicks ?? 0).TotalSeconds;
+        if (!TrickplayMatchesRuntime(info.ThumbnailCount, info.Interval, runtime))
+        {
+            _logger.LogInformation(
+                "AutoCrop: trickplay of {Path} ({Count} x {Interval} ms) doesn't match its runtime of {Runtime:0}s",
+                item.Path, info.ThumbnailCount, info.Interval, runtime);
+            return null;
+        }
+
+        // In the metadata folder, or beside the file with "Save trickplay images next to media".
+        var directory = new[] { false, true }
+            .Select(saveWithMedia => _trickplayManager.GetTrickplayDirectory(item, info.TileWidth, info.TileHeight, info.Width, saveWithMedia))
+            .FirstOrDefault(dir => !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, "0.jpg")));
+        if (directory == null || File.GetLastWriteTimeUtc(Path.Combine(directory, "0.jpg")) < fileModifiedUtc)
+            return null;
+
+        var parser = new CropdetectParser();
+        var (exitCode, lastLine) = await RunFfmpegAsync(
+            TrickplayArguments(directory, info.TileWidth, info.TileHeight), parser, cancellationToken).ConfigureAwait(false);
+        if (exitCode != 0 || parser.Samples.Count < info.ThumbnailCount)
+        {
+            _logger.LogInformation(
+                "AutoCrop could not read the trickplay of {Path}: {Count} of {Expected} thumbnails, {LastLine}",
+                item.Path, parser.Samples.Count, info.ThumbnailCount, lastLine);
+            return null;
+        }
+
+        // The last sheet is padded with black cells past ThumbnailCount; those aren't thumbnails.
+        var thumbnails = parser.Samples
+            .Take(info.ThumbnailCount)
+            .Select((s, i) => s with { Time = i * info.Interval / 1000.0 })
+            .ToList();
+        return (thumbnails, parser.FrameWidth ?? info.Width, parser.FrameHeight ?? info.Height);
     }
 
     private async Task<(int ExitCode, string LastLine)> RunFfmpegAsync(

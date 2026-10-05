@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Controller.Trickplay;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -90,39 +92,87 @@ public class CropScannerTests : IDisposable
     /// pattern of the given height centred on black: (seconds, picture height).
     /// </summary>
     private string MakeClip(string ffmpeg, string name, string pixelFormat, params (int Seconds, int Height)[] parts)
+        => MakeClip(ffmpeg, name, pixelFormat, Array.Empty<string>(), parts);
+
+    private string MakeClip(string ffmpeg, string name, string pixelFormat, string[] encoderArguments, params (int Seconds, int Height)[] parts)
     {
         var path = Path.Combine(_dir, name);
         var graph = string.Join(';', parts.Select((p, i) =>
             $"testsrc2=s=640x{p.Height}:r=24:d={p.Seconds},pad=640:360:0:{(360 - p.Height) / 2}:black[v{i}]"));
         graph += ";" + string.Concat(parts.Select((_, i) => $"[v{i}]")) + $"concat=n={parts.Length}:v=1:a=0";
 
-        var run = Process.Start(new ProcessStartInfo(ffmpeg)
-        {
-            ArgumentList = { "-v", "error", "-y", "-f", "lavfi", "-i", graph, "-c:v", "libx264", "-g", "24", "-pix_fmt", pixelFormat, path },
-            RedirectStandardError = true,
-        })!;
+        RunFfmpeg(ffmpeg, new[] { "-f", "lavfi", "-i", graph, "-c:v", "libx264", "-preset", "ultrafast", "-g", "24" }
+            .Concat(encoderArguments)
+            .Concat(new[] { "-pix_fmt", pixelFormat, path }));
+        return path;
+    }
+
+    private static void RunFfmpeg(string ffmpeg, IEnumerable<string> arguments)
+    {
+        var startInfo = new ProcessStartInfo(ffmpeg) { RedirectStandardError = true };
+        foreach (var argument in new[] { "-v", "error", "-y" }.Concat(arguments))
+            startInfo.ArgumentList.Add(argument);
+
+        var run = Process.Start(startInfo)!;
         var error = run.StandardError.ReadToEnd();
         run.WaitForExit();
         Assert.True(run.ExitCode == 0, error);
-        return path;
+    }
+
+    /// <summary>
+    /// Trickplay made the way Jellyfin makes it: a 320 px wide thumbnail every 10 s, tiled into 10x10
+    /// sheets 0.jpg, 1.jpg, ... (the last one padded with black cells), in a folder laid out like
+    /// Jellyfin's. Returns a trickplay manager that points there, and the thumbnail count.
+    /// </summary>
+    private (ITrickplayManager Manager, int Thumbnails) MakeTrickplay(string ffmpeg, string clip, Movie movie)
+    {
+        var thumbnails = Path.Combine(_dir, "thumbnails-" + movie.Id.ToString("N"));
+        var sheets = Path.Combine(_dir, "trickplay", movie.Id.ToString("N")[..2], movie.Id.ToString("N"), "320 - 10x10");
+        Directory.CreateDirectory(thumbnails);
+        Directory.CreateDirectory(sheets);
+        RunFfmpeg(ffmpeg, new[] { "-i", clip, "-vf", "fps=1/10,scale=320:-2", Path.Combine(thumbnails, "%d.jpg") });
+        var count = Directory.GetFiles(thumbnails).Length;
+        RunFfmpeg(ffmpeg, new[] { "-framerate", "1", "-i", Path.Combine(thumbnails, "%d.jpg"), "-vf", "tile=10x10", "-start_number", "0", Path.Combine(sheets, "%d.jpg") });
+
+        var manager = Substitute.For<ITrickplayManager>();
+        manager.GetTrickplayResolutions(movie.Id).Returns(new Dictionary<int, TrickplayInfo>
+        {
+            [320] = new() { ItemId = movie.Id, Width = 320, Height = 180, TileWidth = 10, TileHeight = 10, ThumbnailCount = count, Interval = 10000 },
+        });
+        manager.GetTrickplayDirectory(movie, 10, 10, 320, false).Returns(sheets);
+        return (manager, count);
     }
 
     private CropStore Store() => new(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
 
-    private static CropScanner Scanner(CropStore store, string? ffmpeg = null, EncodingOptions? encoding = null)
+    private static CropScanner Scanner(
+        CropStore store, string? ffmpeg = null, EncodingOptions? encoding = null, ITrickplayManager? trickplay = null)
     {
         var encoder = Substitute.For<IMediaEncoder>();
         encoder.EncoderPath.Returns(ffmpeg ?? "ffmpeg-must-not-run");
         var configuration = Substitute.For<IConfigurationManager>();
         configuration.GetConfiguration("encoding").Returns(encoding);
-        return new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
+        return new CropScanner(encoder, configuration, trickplay ?? Substitute.For<ITrickplayManager>(), store, NullLogger<CropScanner>.Instance);
     }
 
-    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+    private static Movie MovieAt(string path, int seconds = 0) => new()
     {
+        Id = Guid.NewGuid(),
+        Path = path,
+        Name = Path.GetFileName(path),
+        Width = 640,
+        Height = 360,
+        RunTimeTicks = TimeSpan.FromSeconds(seconds).Ticks,
+    };
+
+    private Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
+        => Scan(ffmpeg, MovieAt(path), encoding);
+
+    private async Task<CropResult> Scan(string ffmpeg, Movie movie, EncodingOptions? encoding = null, ITrickplayManager? trickplay = null)
+    {
+        var path = movie.Path;
         var store = Store();
-        var scanner = Scanner(store, ffmpeg, encoding);
-        var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = Path.GetFileName(path) };
+        var scanner = Scanner(store, ffmpeg, encoding, trickplay);
 
         var result = await scanner.ScanAsync(movie, CancellationToken.None);
 
@@ -295,5 +345,200 @@ public class CropScannerTests : IDisposable
 
         Assert.Null(result.Error);
         AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
+    }
+
+    // ----- trickplay pre-check -----
+
+    [Fact]
+    public void TrickplayArguments_UntileTheSheetsInOrder()
+    {
+        var args = CropScanner.TrickplayArguments("/config/trickplay/f4/x/320 - 10x10", 10, 10);
+
+        Assert.Equal(Path.Combine("/config/trickplay/f4/x/320 - 10x10", "%d.jpg"), args[args.ToList().IndexOf("-i") + 1]);
+        Assert.StartsWith("untile=10x10,cropdetect=", args[args.ToList().IndexOf("-vf") + 1]);
+        Assert.Contains(Path.Combine("/media/100%%", "%d.jpg"), CropScanner.TrickplayArguments("/media/100%", 10, 10));
+    }
+
+    [Theory]
+    [InlineData(144, 10000, 1440, true)]
+    [InlineData(145, 10000, 1440, true)]
+    [InlineData(150, 10000, 1440, true)]
+    [InlineData(151, 10000, 1440, false)]
+    [InlineData(144, 10000, 2880, false)]
+    [InlineData(30, 10000, 330, true)]
+    [InlineData(30, 10000, 400, false)]
+    [InlineData(30, 10000, 0, false)]
+    public void TrickplayMatchesRuntime_Within10PercentAnd60Seconds(int count, int interval, double runtime, bool expected)
+    {
+        Assert.Equal(expected, CropScanner.TrickplayMatchesRuntime(count, interval, runtime));
+    }
+
+    private CropResult TrickplayResult(CropStore store, CropBox thumbnail)
+    {
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisVersion = CropAnalyzer.Version;
+        result.AnalysisSource = AnalysisSources.Trickplay;
+        result.Crop = CropBox.Full(1920, 1080);
+        result.Segments = null;
+        store.SetSamples(movie.Id, 600, Enumerable.Range(0, 60).Select(i => new KeyframeSample(i * 10, thumbnail)).ToList(), (320, 180));
+        return result;
+    }
+
+    [Fact]
+    public void Reanalyse_TrickplayResultThatStillShowsNoBars_IsKept()
+    {
+        var store = Store();
+        var result = TrickplayResult(store, CropBox.Full(320, 180));
+
+        var (reanalysed, needScan) = Scanner(store).Reanalyse(outdatedOnly: false);
+
+        Assert.Equal(1, reanalysed);
+        Assert.Empty(needScan);
+        Assert.Equal(AnalysisSources.Trickplay, store.Get(result.ItemId)!.AnalysisSource);
+    }
+
+    [Fact]
+    public void Reanalyse_TrickplayResultThatNoLongerPasses_GetsTheExactScan()
+    {
+        var store = Store();
+        var result = TrickplayResult(store, new CropBox(0, 10, 320, 160));
+
+        var (reanalysed, needScan) = Scanner(store).Reanalyse(outdatedOnly: false);
+
+        Assert.Equal(0, reanalysed);
+        Assert.Equal(result.ItemId, Assert.Single(needScan));
+        Assert.Null(store.Get(result.ItemId));
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_CleanTrickplay_SettlesTheFileWithoutAKeyframeScan()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var movie = MovieAt(MakeClip(ffmpeg!, "clean.mp4", "yuv420p", (255, 360)), 255);
+        var (trickplay, thumbnails) = MakeTrickplay(ffmpeg!, movie.Path, movie);
+
+        var result = await Scan(ffmpeg!, movie, trickplay: trickplay);
+
+        Assert.Equal(AnalysisSources.Trickplay, result.AnalysisSource);
+        Assert.Equal(CropBox.Full(640, 360), result.Crop);
+        Assert.Null(result.Segments);
+        Assert.False(result.HasCrop);
+
+        // One sheet of 100 cells, of which only the real thumbnails count; the rest is black padding.
+        Assert.InRange(thumbnails, 25, 27);
+        Assert.Equal(thumbnails, result.Keyframes);
+        var stored = Store().GetSamples(movie.Id)!.Value;
+        Assert.Equal((320, 180), stored.ThumbnailSize);
+        Assert.Equal((thumbnails - 1) * 10, stored.Samples[^1].Time);
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_TrickplayWithBars_GetsTheExactCrop()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var movie = MovieAt(MakeClip(ffmpeg!, "bars.mp4", "yuv420p", (255, 320)), 255);
+        var (trickplay, _) = MakeTrickplay(ffmpeg!, movie.Path, movie);
+
+        var result = await Scan(ffmpeg!, movie, trickplay: trickplay);
+
+        Assert.Equal(AnalysisSources.Keyframes, result.AnalysisSource);
+        AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_TrickplayOfAShapeSwitchingFilm_GetsTheExactScan()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+
+        // The full-frame part makes the union full frame; the 2.39:1 parts are a per-scene matte.
+        var movie = MovieAt(MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (90, 268), (90, 360), (90, 268)), 270);
+        var (trickplay, _) = MakeTrickplay(ffmpeg!, movie.Path, movie);
+
+        var result = await Scan(ffmpeg!, movie, trickplay: trickplay);
+
+        Assert.Equal(AnalysisSources.Keyframes, result.AnalysisSource);
+        Assert.Equal(3, result.Segments!.Count);
+        AssertBox(new CropBox(0, 46, 640, 268), result.Segments[0].Box);
+    }
+
+    [SkippableTheory]
+    [InlineData("missing")]
+    [InlineData("stale")]
+    [InlineData("disabled")]
+    public async Task EndToEnd_UnusableTrickplay_GetsTheExactScan(string problem)
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var movie = MovieAt(MakeClip(ffmpeg!, "clean.mp4", "yuv420p", (255, 360)), 255);
+        var (trickplay, _) = MakeTrickplay(ffmpeg!, movie.Path, movie);
+        if (problem == "missing")
+            trickplay = Substitute.For<ITrickplayManager>();
+        else if (problem == "stale")
+            movie.RunTimeTicks = TimeSpan.FromMinutes(45).Ticks;
+        else
+            Plugin.Instance!.Configuration.UseTrickplay = false;
+
+        var result = await Scan(ffmpeg!, movie, trickplay: trickplay);
+
+        Assert.Equal(AnalysisSources.Keyframes, result.AnalysisSource);
+        Assert.Equal(CropBox.Full(640, 360), result.Crop);
+    }
+
+    // ----- one scan per item -----
+
+    [Fact]
+    public async Task ScanAsync_ItemScannedInTheMeantime_IsNotScannedAgain()
+    {
+        var store = Store();
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisVersion = CropAnalyzer.Version;
+
+        // The scanner's ffmpeg doesn't exist: running it would record a failure instead.
+        Assert.Same(result, await Scanner(store).ScanAsync(movie, CancellationToken.None));
+        Assert.Same(result, store.Get(movie.Id));
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_TaskAndQueueOnTheSameItem_ScanItOnce()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var store = Store();
+        var scanner = Scanner(store, ffmpeg);
+        var movie = MovieAt(MakeClip(ffmpeg!, "once.mp4", "yuv420p", (6, 320)));
+
+        var results = await Task.WhenAll(scanner.ScanAsync(movie, CancellationToken.None), scanner.ScanAsync(movie, CancellationToken.None));
+
+        Assert.Same(results[0], results[1]);
+        Assert.Equal(AnalysisSources.Keyframes, results[0].AnalysisSource);
+    }
+
+    // ----- files with too few keyframes -----
+
+    [SkippableFact]
+    public async Task EndToEnd_SparseKeyframes_AreMeasuredEveryTwoSeconds()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+
+        // Only the first frame is a keyframe: one sample in 130 seconds.
+        var oneKeyframe = new[] { "-g", "100000", "-keyint_min", "100000", "-sc_threshold", "0", "-x264-params", "scenecut=0" };
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "sparse.mp4", "yuv420p", oneKeyframe, (130, 320)));
+
+        Assert.Equal(AnalysisSources.Frames, result.AnalysisSource);
+        Assert.InRange(result.Keyframes, 60, 70);
+        AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
+    }
+
+    [Fact]
+    public void Arguments_EveryTwoSeconds_DecodesEveryFrame()
+    {
+        var args = CropScanner.Arguments("/media/film.mkv", everyTwoSeconds: true);
+
+        Assert.DoesNotContain("-skip_frame", args);
+        Assert.StartsWith("select=", args[args.ToList().IndexOf("-vf") + 1]);
     }
 }

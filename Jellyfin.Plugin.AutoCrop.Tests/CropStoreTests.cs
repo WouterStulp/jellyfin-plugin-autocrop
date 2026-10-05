@@ -130,6 +130,29 @@ public class CropStoreTests : IDisposable
     }
 
     [Fact]
+    public void Replace_WithoutAnUpdate_RemovesTheResult()
+    {
+        var store = NewStore();
+        var result = ResultFor(_video);
+        store.Set(result);
+
+        store.Replace(new (CropResult, CropResult?)[] { (result, null) });
+
+        Assert.Null(NewStore().Get(result.ItemId));
+    }
+
+    [Fact]
+    public void Samples_KeepTheirThumbnailScale()
+    {
+        var store = NewStore();
+        var id = Guid.NewGuid();
+
+        store.SetSamples(id, 600, new[] { new KeyframeSample(0, new CropBox(0, 0, 320, 180)) }, (320, 180));
+
+        Assert.Equal((320, 180), NewStore().GetSamples(id)!.Value.ThumbnailSize);
+    }
+
+    [Fact]
     public void Samples_RoundTripCompactlyBesideTheResults()
     {
         var store = NewStore();
@@ -147,6 +170,7 @@ public class CropStoreTests : IDisposable
         Assert.NotNull(loaded);
         Assert.Equal(3012.48, loaded.Value.DurationSeconds);
         Assert.Equal(samples, loaded.Value.Samples);
+        Assert.Null(loaded.Value.ThumbnailSize);
         Assert.True(File.Exists(Path.Combine(_dir, "data", "samples", id.ToString("N") + ".json.gz")));
         Assert.False(File.Exists(_storePath));
         Assert.Null(store.GetSamples(Guid.NewGuid()));
@@ -180,7 +204,7 @@ public class CropStoreTests : IDisposable
         var rescanned = ResultFor(_video, stale.ItemId);
         store.Set(rescanned);
 
-        store.Replace(new[] { (stale, stale.Copy()), (current, current.Copy()) });
+        store.Replace(new (CropResult, CropResult?)[] { (stale, stale.Copy()), (current, current.Copy()) });
 
         Assert.Same(rescanned, store.Get(stale.ItemId));
         Assert.NotSame(current, store.Get(current.ItemId));

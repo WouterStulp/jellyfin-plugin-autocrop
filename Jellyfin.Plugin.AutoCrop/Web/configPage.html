@@ -46,7 +46,7 @@
                 .ac-app .ac-progress.show { display: flex; }
                 .ac-app .ac-progress .bar { flex: 1; max-width: 360px; height: 6px; border-radius: 3px; background: var(--ac-surface-2); overflow: hidden; }
                 .ac-app .ac-progress .fill { height: 100%; width: 0; background: var(--ac-primary); transition: width .4s; }
-                .ac-app .ac-tiles { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: 12px; margin-bottom: 22px; }
+                .ac-app .ac-tiles { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; margin-bottom: 22px; }
                 @media (max-width: 1100px) { .ac-app .ac-tiles { grid-template-columns: repeat(3, minmax(0,1fr)); } .ac-app .ac { grid-template-columns: 1fr; } .ac-app .ac-rail { border-right: 0; border-bottom: 1px solid var(--ac-border); } }
                 .ac-app .ac-tile { background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: var(--ac-r); padding: 15px 16px; box-shadow: var(--ac-shadow); position: relative; overflow: hidden; }
                 .ac-app .ac-tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--ac-primary)); }
@@ -71,6 +71,7 @@
                 .ac-app .ac-pill.no-bars { color: var(--ac-muted); background: var(--ac-surface-2); }
                 .ac-app .ac-pill.failed { color: var(--ac-crit); background: rgba(224,113,79,.14); cursor: help; }
                 .ac-app .ac-pill.queued { color: var(--ac-warn); background: rgba(232,162,60,.14); }
+                .ac-app .ac-tag { font-family: var(--ac-mono); font-size: 10px; color: var(--ac-faint); border: 1px solid var(--ac-border-strong); padding: 0 5px; border-radius: 4px; margin-left: 6px; }
                 .ac-app .ac-timeline { display: flex; width: 160px; height: 14px; border-radius: 3px; overflow: hidden; background: var(--ac-surface-2); margin-top: 4px; }
                 .ac-app .ac-timeline span { height: 100%; border-right: 1px solid var(--ac-surface); box-sizing: border-box; }
                 .ac-app .ac-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; font-size: 12.5px; color: var(--ac-muted); }
@@ -107,6 +108,7 @@
                                 <div class="ac-tile"><div class="n" id="acScanned">&ndash;</div><div class="ac-label">Scanned</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-primary);"><div class="n" id="acWithBars">&ndash;</div><div class="ac-label">With bars</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-scene);"><div class="n" id="acPerScene">&ndash;</div><div class="ac-label">Per-scene</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-ok);" title="No bars in Jellyfin's trickplay thumbnails, so the file wasn't decoded"><div class="n" id="acByTrickplay">&ndash;</div><div class="ac-label">By trickplay</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-warn);"><div class="n" id="acPending">&ndash;</div><div class="ac-label">Pending</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-crit);"><div class="n" id="acFailed">&ndash;</div><div class="ac-label">Failed</div></div>
                             </div>
@@ -134,6 +136,7 @@
                             <form class="ac-panel ac-form" id="acSettings">
                                 <label class="ac-check"><input type="checkbox" id="acEnabled" /><span>Enable AutoCrop<span class="desc" style="display:block;">Scans new items and crops playback in the web player.</span></span></label>
                                 <label class="ac-check"><input type="checkbox" id="acHardware" /><span>Decode on the GPU<span class="desc" style="display:block;">Uses the hardware acceleration set under Playback &gt; Transcoding to scan faster. Same result as the CPU, which takes over when the GPU can't decode a file.</span></span></label>
+                                <label class="ac-check"><input type="checkbox" id="acTrickplay" /><span>Use trickplay images to skip files without bars<span class="desc" style="display:block;">Checks Jellyfin's trickplay thumbnails first, which takes a second. Files whose thumbnails show picture edge to edge in every shape are settled without decoding them; everything else, and every crop, comes from the exact keyframe scan.</span></span></label>
                                 <label class="ac-field"><span class="ac-label">Default mode</span>
                                     <select class="ac-input" id="acDefaultMode">
                                         <option value="per-scene">Per scene: follow aspect-ratio changes (IMAX scenes)</option>
@@ -204,6 +207,7 @@
                             $('acScanned').textContent = s.scanned;
                             $('acWithBars').textContent = s.withBars;
                             $('acPerScene').textContent = s.perScene;
+                            $('acByTrickplay').textContent = s.byTrickplay;
                             $('acPending').textContent = s.pending + (s.queued ? ' (' + s.queued + ' queued)' : '');
                             $('acFailed').textContent = s.failed;
                         }, function () {});
@@ -238,7 +242,7 @@
                             + '<td class="ac-mono">' + (failed ? '' : esc(row.frameWidth + '\u00d7' + row.frameHeight)) + '</td>'
                             + '<td class="ac-mono">' + picture + '</td>'
                             + '<td class="ac-mono">' + segments + '</td>'
-                            + '<td class="ac-mono">' + esc(formatDate(row.scannedAt)) + '</td>'
+                            + '<td class="ac-mono">' + esc(formatDate(row.scannedAt)) + (row.source ? '<span class="ac-tag">' + esc(row.source) + '</span>' : '') + '</td>'
                             + '<td>' + statusPill(row) + '</td>'
                             + '<td><button type="button" class="ac-btn small" data-rescan="' + esc(row.itemId) + '">Rescan</button></td>'
                             + '</tr>';
@@ -332,6 +336,7 @@
                         ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
                             $('acEnabled').checked = c.Enabled !== false;
                             $('acHardware').checked = c.HardwareDecoding !== false;
+                            $('acTrickplay').checked = c.UseTrickplay !== false;
                             $('acDefaultMode').value = c.DefaultMode || 'per-scene';
                             $('acMinBar').value = c.MinimumBarPercent;
                             $('acMinSegment').value = c.MinimumSegmentSeconds;
@@ -350,6 +355,7 @@
                         ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
                             c.Enabled = $('acEnabled').checked;
                             c.HardwareDecoding = $('acHardware').checked;
+                            c.UseTrickplay = $('acTrickplay').checked;
                             c.DefaultMode = $('acDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
                             c.MinimumSegmentSeconds = number('acMinSegment', 30);
@@ -368,7 +374,7 @@
                         $('acSaveStatus').textContent = 'Re-analysing\u2026';
                         postJson('AutoCrop/Reanalyse').then(function (r) {
                             $('acSaveStatus').textContent = 'Re-analysed ' + r.reanalysed + ' item' + (r.reanalysed === 1 ? '' : 's')
-                                + (r.rescanning ? '; ' + r.rescanning + ' scanned before keyframes were kept are queued for a scan' : '');
+                                + (r.rescanning ? '; ' + r.rescanning + ' queued for a scan' : '');
                             refresh();
                         }, function () {
                             $('acSaveStatus').textContent = 'Couldn\u2019t re-analyse';

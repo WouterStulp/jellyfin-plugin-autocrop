@@ -25,6 +25,43 @@ public class CropAnalyzerTests
     private static IReadOnlyList<CropSegment> Segments(IReadOnlyList<KeyframeSample> samples, double duration, AnalyzerOptions? options = null)
         => CropAnalyzer.Segments(samples, W, H, duration, options ?? Options);
 
+    // ----- trickplay thumbnails -----
+
+    private static List<KeyframeSample> Thumbnails(int count, Func<int, CropBox?> box)
+        => Enumerable.Range(0, count).Select(i => K(i * 10, box(i))).ToList();
+
+    [Fact]
+    public void ShowsNoBars_FullFrameThumbnailsWithDarkShots()
+    {
+        // Dark shots give smaller, scattered boxes; they never recur as a matte.
+        var thumbnails = Thumbnails(200, i => i % 10 == 3 ? new CropBox(40 + i % 7, 20 + i % 11, 200, 100) : i % 25 == 0 ? null : CropBox.Full(320, 180));
+
+        Assert.True(CropAnalyzer.ShowsNoBars(thumbnails, 320, 180));
+    }
+
+    [Fact]
+    public void ShowsNoBars_NotWithBarsInEveryThumbnail()
+    {
+        Assert.False(CropAnalyzer.ShowsNoBars(Thumbnails(200, _ => new CropBox(0, 10, 320, 160)), 320, 180));
+        Assert.False(CropAnalyzer.ShowsNoBars(Thumbnails(200, _ => new CropBox(0, 1, 320, 179)), 320, 180));
+    }
+
+    [Fact]
+    public void ShowsNoBars_NotWithARecurringMatteBesideFullFrame()
+    {
+        // An IMAX film: full frame now and then, 2.39:1 in 10 of 200 thumbnails (5%).
+        var thumbnails = Thumbnails(200, i => i < 10 ? new CropBox(0, 23, 320, 134) : CropBox.Full(320, 180));
+
+        Assert.False(CropAnalyzer.ShowsNoBars(thumbnails, 320, 180));
+    }
+
+    [Fact]
+    public void ShowsNoBars_NotFromTooFewThumbnails()
+    {
+        Assert.False(CropAnalyzer.ShowsNoBars(Thumbnails(CropAnalyzer.MinimumThumbnails - 1, _ => CropBox.Full(320, 180)), 320, 180));
+        Assert.True(CropAnalyzer.ShowsNoBars(Thumbnails(CropAnalyzer.MinimumThumbnails, _ => CropBox.Full(320, 180)), 320, 180));
+    }
+
     // ----- whole-file union -----
 
     [Fact]

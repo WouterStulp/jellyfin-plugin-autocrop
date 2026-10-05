@@ -93,7 +93,8 @@ public class AutoCropController : ControllerBase
 
     /// <summary>
     /// Recomputes every result from its stored keyframes with the current settings, without ffmpeg.
-    /// Items scanned before keyframes were kept are queued for a scan.
+    /// Items scanned before keyframes were kept, and trickplay results that no longer pass, are queued
+    /// for a scan.
     /// </summary>
     [HttpPost("Reanalyse")]
     [Authorize(Policy = AdminPolicy)]
@@ -122,6 +123,7 @@ public class AutoCropController : ControllerBase
             scanned = scanned.Count,
             withBars = scanned.Count(r => r.HasCrop),
             perScene = scanned.Count(r => r.IsPerScene),
+            byTrickplay = scanned.Count(r => r.AnalysisSource == AnalysisSources.Trickplay),
             failed = results.Count - scanned.Count,
             pending,
             queued = _queue.PendingCount,
@@ -161,6 +163,7 @@ public class AutoCropController : ControllerBase
                 aspect = x.Result.Crop is { Height: > 0 } c ? Math.Round((double)c.Width / c.Height, 2) : (double?)null,
                 segments = x.Result.Segments,
                 scannedAt = x.Result.ScannedAtUtc,
+                source = x.Result.Failed ? null : x.Result.AnalysisSource ?? AnalysisSources.Keyframes,
             }),
         });
     }
