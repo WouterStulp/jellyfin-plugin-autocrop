@@ -28,6 +28,8 @@ public sealed record CropBox(
         return new CropBox(x, y, Math.Max(Right, other.Right) - x, Math.Max(Bottom, other.Bottom) - y);
     }
 
+    public override string ToString() => $"{Width}x{Height}+{X}+{Y}";
+
     public bool IsCloseTo(CropBox other, int toleranceX, int toleranceY)
         => Math.Abs(X - other.X) <= toleranceX
             && Math.Abs(Right - other.Right) <= toleranceX

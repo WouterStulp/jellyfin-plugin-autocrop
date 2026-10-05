@@ -182,7 +182,8 @@ public class AutoCropController : ControllerBase
                 episode.SeriesName,
                 episode.ParentIndexNumber ?? 0,
                 episode.IndexNumber ?? 0),
-            Movie movie when movie.ProductionYear.HasValue => $"{movie.Name} ({movie.ProductionYear})",
+            Movie { ProductionYear: { } year } movie when !movie.Name.EndsWith($"({year})", StringComparison.Ordinal)
+                => $"{movie.Name} ({year})",
             not null => item.Name,
             null => Path.GetFileNameWithoutExtension(result.Path),
         };

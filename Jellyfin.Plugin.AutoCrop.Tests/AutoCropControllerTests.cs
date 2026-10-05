@@ -206,6 +206,19 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal("Unreadable file", row.GetProperty("error").GetString());
     }
 
+    [Theory]
+    [InlineData("Dune", "Dune (2021)")]
+    [InlineData("Dune (2021)", "Dune (2021)")]
+    public void Results_MovieTitle_HasTheYearOnce(string name, string expected)
+    {
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960), name: name);
+        movie.ProductionYear = 2021;
+
+        var row = Json(Controller(_alice.Id).GetResults()).GetProperty("items")[0];
+
+        Assert.Equal(expected, row.GetProperty("title").GetString());
+    }
+
     [Fact]
     public void Results_ReportAspectRatio()
     {
