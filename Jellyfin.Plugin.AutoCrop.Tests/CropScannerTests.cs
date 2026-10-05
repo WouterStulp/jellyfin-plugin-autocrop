@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -41,6 +43,34 @@ public class CropScannerTests : IDisposable
         Assert.Equal(expected, CropScanner.IsEligible(item));
     }
 
+    [Fact]
+    public void Arguments_PutHardwareDecodingBeforeTheInput()
+    {
+        var args = CropScanner.Arguments("/media/film.mkv", new[] { "-hwaccel", "vaapi" });
+
+        Assert.Equal(args.ToList().IndexOf("-i") - 2, args.ToList().IndexOf("-hwaccel"));
+        Assert.Equal(CropScanner.Arguments("/media/film.mkv").Count + 2, args.Count);
+    }
+
+    [Fact]
+    public void HardwareDecoding_FollowsJellyfinsAcceleration()
+    {
+        Assert.Null(CropScanner.HardwareDecodingArguments(null));
+        Assert.Null(CropScanner.HardwareDecodingArguments(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.none }));
+        Assert.Equal(
+            new[] { "-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD129" },
+            CropScanner.HardwareDecodingArguments(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.vaapi, VaapiDevice = "/dev/dri/renderD129" }));
+        Assert.Equal(
+            new[] { "-hwaccel", "cuda" },
+            CropScanner.HardwareDecodingArguments(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc }));
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Equal(
+                new[] { "-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128" },
+                CropScanner.HardwareDecodingArguments(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.qsv, QsvDevice = string.Empty }));
+        }
+    }
+
     // ----- end to end against a real ffmpeg (AUTOCROP_FFMPEG, or ffmpeg on the PATH) -----
 
     private static string? Ffmpeg()
@@ -77,12 +107,14 @@ public class CropScannerTests : IDisposable
         return path;
     }
 
-    private async Task<CropResult> Scan(string ffmpeg, string path)
+    private async Task<CropResult> Scan(string ffmpeg, string path, EncodingOptions? encoding = null)
     {
         var encoder = Substitute.For<IMediaEncoder>();
         encoder.EncoderPath.Returns(ffmpeg);
+        var configuration = Substitute.For<IConfigurationManager>();
+        configuration.GetConfiguration("encoding").Returns(encoding);
         var store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
-        var scanner = new CropScanner(encoder, store, NullLogger<CropScanner>.Instance);
+        var scanner = new CropScanner(encoder, configuration, store, NullLogger<CropScanner>.Instance);
         var movie = new Movie { Id = Guid.NewGuid(), Path = path, Name = Path.GetFileName(path) };
 
         var result = await scanner.ScanAsync(movie, CancellationToken.None);
@@ -165,5 +197,18 @@ public class CropScannerTests : IDisposable
 
         Assert.True(result.Failed);
         Assert.StartsWith("ffmpeg exited with code", result.Error);
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_GpuThatCantDecode_FallsBackToTheCpu()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var gone = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.vaapi, VaapiDevice = "/dev/dri/does-not-exist" };
+
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "fallback.mp4", "yuv420p", (6, 320)), gone);
+
+        Assert.Null(result.Error);
+        AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
     }
 }

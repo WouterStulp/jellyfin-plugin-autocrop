@@ -133,6 +133,7 @@
                             <div class="ac-head"><div><h1>Settings</h1><p>Server-wide defaults. Viewers can switch modes for themselves with the <b>c</b> key during playback.</p></div></div>
                             <form class="ac-panel ac-form" id="acSettings">
                                 <label class="ac-check"><input type="checkbox" id="acEnabled" /><span>Enable AutoCrop<span class="desc" style="display:block;">Scans new items and crops playback in the web player.</span></span></label>
+                                <label class="ac-check"><input type="checkbox" id="acHardware" /><span>Decode on the GPU<span class="desc" style="display:block;">Uses the hardware acceleration set under Playback &gt; Transcoding to scan faster. Same result as the CPU, which takes over when the GPU can't decode a file.</span></span></label>
                                 <label class="ac-field"><span class="ac-label">Default mode</span>
                                     <select class="ac-input" id="acDefaultMode">
                                         <option value="per-scene">Per scene: follow aspect-ratio changes (IMAX scenes)</option>
@@ -328,6 +329,7 @@
                     function loadSettings() {
                         ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
                             $('acEnabled').checked = c.Enabled !== false;
+                            $('acHardware').checked = c.HardwareDecoding !== false;
                             $('acDefaultMode').value = c.DefaultMode || 'per-scene';
                             $('acMinBar').value = c.MinimumBarPercent;
                             $('acMinSegment').value = c.MinimumSegmentSeconds;
@@ -345,6 +347,7 @@
                         $('acSaveStatus').textContent = '';
                         ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
                             c.Enabled = $('acEnabled').checked;
+                            c.HardwareDecoding = $('acHardware').checked;
                             c.DefaultMode = $('acDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
                             c.MinimumSegmentSeconds = number('acMinSegment', 2);
