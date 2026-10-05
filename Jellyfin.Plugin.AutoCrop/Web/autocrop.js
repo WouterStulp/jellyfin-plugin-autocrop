@@ -91,6 +91,7 @@
         lastSessionCheck: 0,
         autoAspect: true,
         mode: null,
+        seeking: false,
         css: '',
         range: null
     };
@@ -233,7 +234,7 @@
         }
 
         // Animate only between two zoom levels during playback; jump when seeking, starting or stopping.
-        var animate = transitionMs > 0 && !video.seeking && state.css && css;
+        var animate = transitionMs > 0 && !state.seeking && state.css && css;
         video.style.transition = animate ? 'transform ' + transitionMs + 'ms ease-in-out' : '';
         video.style.transformOrigin = css ? '50% 50%' : '';
         video.style.transform = css;
@@ -293,6 +294,18 @@
         if (video !== state.video) {
             detach();
             state.video = video;
+            if (video && !video.autocropListening) {
+                video.autocropListening = true;
+                video.addEventListener('timeupdate', update);
+                video.addEventListener('loadedmetadata', update);
+                video.addEventListener('seeking', function () {
+                    state.seeking = true;
+                });
+                video.addEventListener('seeked', function () {
+                    update();
+                    state.seeking = false;
+                });
+            }
         }
         if (!video) {
             return;
@@ -328,10 +341,14 @@
         } else if (!state.itemId || Date.now() - state.lastSessionCheck > 10000) {
             resolveFromSession(source);
         }
+        update();
+        // Picks up a subtitle track loaded after the zoom was applied.
+        onCueChange();
     }
 
-    // Per frame so a scene change, a seek, a resize or fullscreen is picked up at once. Cheap: the
-    // DOM is only touched when the transform actually changes.
+    // Per frame so a scene change, a resize or fullscreen is picked up at once; the video events and
+    // the tick cover browsers that throttle animation frames. Cheap: the DOM is only touched when the
+    // transform actually changes.
     function frame() {
         update();
         window.requestAnimationFrame(frame);
