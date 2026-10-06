@@ -43,7 +43,16 @@ Some Blu-ray remuxes flag hardly any keyframes (three in a 24-minute episode), a
 -vf "select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',cropdetect=limit=0.094:round=2:reset=1:skip=0"
 ```
 
-The analysis is the same; the result's source is `frames` instead of `keyframes`. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
+The analysis is the same; the result's source is `frames` instead of `keyframes`.
+
+With Intel QSV on Linux this pass keeps the frames on the GPU until `select` has picked one, so only one frame per 2 seconds is copied to system memory:
+
+```
+-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qs@va -hwaccel qsv -hwaccel_output_format qsv ...
+-vf "select=...,hwdownload,format=nv12,cropdetect=..."
+```
+
+On a Pentium Gold 8505 that measured 5 minutes of an h264 Blu-ray remux in 23 s instead of 52 s, with byte-identical cropdetect output. The download format follows the pixel format the keyframe pass saw: `nv12` for 8-bit, `p010le` for 10-bit 4:2:0; any other format takes the usual path. The same trick on plain VAAPI surfaces (`-hwaccel_output_format vaapi`) silently dropped three quarters of the frames, so the QSV result is only used when ffmpeg succeeds and gives at least 90% of one sample per 2 seconds. Otherwise the file is measured the usual way. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
 
 From those keyframes the plugin builds:
 
@@ -88,7 +97,7 @@ The keyframes make the analysis cheap to redo:
 - The scheduled task scans everything that has no result yet or whose file changed, and drops results for items that left the library.
 - New or updated movies and episodes are queued into one background worker after a 30-second settle delay, so files that are still being copied aren't measured early.
 - Only one ffmpeg runs at a time, at idle priority (nice 19 on Linux), and cancelling the task stops it. When the task and the queue pick the same item, the second one finds a current result and skips it, and an item waits in the queue only once.
-- Decoding runs on the GPU Jellyfin uses for transcoding (VAAPI for Intel QSV/VAAPI on Linux, CUDA for NVENC, VideoToolbox on macOS). Decoding is bit-exact, so the result is identical to the CPU; on an Intel N-series/Pentium iGPU HEVC scans about 3× faster. If the GPU can't decode a file, it is measured again on the CPU. Turn it off with "Decode on the GPU" in the settings.
+- Decoding runs on the GPU Jellyfin uses for transcoding (VAAPI for Intel QSV/VAAPI on Linux, CUDA for NVENC, VideoToolbox on macOS; QSV itself for the 2-second pass, see Detection). Decoding is bit-exact, so the result is identical to the CPU; on an Intel N-series/Pentium iGPU HEVC scans about 3× faster. If the GPU can't decode a file, it is measured again on the CPU. Turn it off with "Decode on the GPU" in the settings.
 - Virtual items, disc images and folders, `.strm` files and remote paths are skipped.
 
 ## Playback

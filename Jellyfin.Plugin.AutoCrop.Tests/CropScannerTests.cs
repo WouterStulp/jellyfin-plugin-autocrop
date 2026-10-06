@@ -547,8 +547,7 @@ public class CropScannerTests : IDisposable
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
         // Only the first frame is a keyframe: one sample in 130 seconds.
-        var oneKeyframe = new[] { "-g", "100000", "-keyint_min", "100000", "-sc_threshold", "0", "-x264-params", "scenecut=0" };
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "sparse.mp4", "yuv420p", oneKeyframe, (130, 320)));
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "sparse.mp4", "yuv420p", OneKeyframe, (130, 320)));
 
         Assert.Equal(AnalysisSources.Frames, result.AnalysisSource);
         Assert.InRange(result.Keyframes, 60, 70);
@@ -576,6 +575,139 @@ public class CropScannerTests : IDisposable
         Assert.Equal(expected, needScan.Contains(movie.Id));
         Assert.Equal(expected, store.Get(movie.Id) == null);
         Assert.Equal(expected, scanner.NeedsScan(movie));
+    }
+
+    [SkippableTheory]
+    [InlineData("yuv420p", "nv12")]
+    [InlineData("nv12", "nv12")]
+    [InlineData("yuv420p10le", "p010le")]
+    [InlineData("p010le", "p010le")]
+    [InlineData("yuv422p10le", null)]
+    [InlineData("yuv420p12le", null)]
+    [InlineData(null, null)]
+    public void QsvFramesDecoding_DownloadsTheSurfaceFormat(string? pixelFormat, string? download)
+    {
+        Skip.IfNot(OperatingSystem.IsLinux(), "QSV decoding is Linux only");
+        var qsv = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.qsv, QsvDevice = "/dev/dri/renderD129" };
+
+        var frames = CropScanner.QsvFramesDecoding(qsv, pixelFormat);
+
+        Assert.Equal(download, frames?.Download);
+        if (frames is var (decoding, _))
+        {
+            Assert.Equal(
+                new[] { "-init_hw_device", "vaapi=va:/dev/dri/renderD129", "-init_hw_device", "qsv=qs@va", "-hwaccel", "qsv", "-hwaccel_output_format", "qsv" },
+                decoding);
+        }
+    }
+
+    [Fact]
+    public void QsvFramesDecoding_OnlyForQsv()
+    {
+        Assert.Null(CropScanner.QsvFramesDecoding(null, "yuv420p"));
+        Assert.Null(CropScanner.QsvFramesDecoding(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.vaapi }, "yuv420p"));
+        Assert.Null(CropScanner.QsvFramesDecoding(new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.nvenc }, "yuv420p"));
+    }
+
+    [Fact]
+    public void Arguments_HardwareDownload_SelectsOnTheGpuThenDownloads()
+    {
+        var args = CropScanner.Arguments("/media/film.mkv", new[] { "-hwaccel", "qsv" }, everyTwoSeconds: true, hardwareDownload: "p010le");
+
+        Assert.Equal(
+            @"select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',hwdownload,format=p010le,cropdetect=limit=0.094:round=2:reset=1:skip=0",
+            args[args.ToList().IndexOf("-vf") + 1]);
+        Assert.True(args.ToList().IndexOf("-hwaccel") < args.ToList().IndexOf("-i"));
+    }
+
+    [Theory]
+    [InlineData(150, 300, true)]
+    [InlineData(135, 300, true)]
+    [InlineData(134, 300, false)]
+    [InlineData(38, 300, false)] // the broken VAAPI surface pass
+    [InlineData(0, 0, false)]
+    public void EnoughFrames_AtLeast90PercentOfOnePerTwoSeconds(int samples, double duration, bool expected)
+    {
+        Assert.Equal(expected, CropScanner.EnoughFrames(samples, duration));
+    }
+
+    /// <summary>
+    /// An ffmpeg that answers QSV runs itself with <paramref name="qsvSamples"/> 2.39:1 samples (from a
+    /// 640x360 frame) and passes everything else to the real one. Every call is logged.
+    /// </summary>
+    private (string Path, string Log) FakeQsvFfmpeg(string ffmpeg, int qsvSamples)
+    {
+        var script = Path.Combine(_dir, "ffmpeg-qsv.sh");
+        var log = Path.Combine(_dir, "ffmpeg-calls.log");
+        File.WriteAllText(script, $$"""
+            #!/bin/sh
+            echo "$*" >> '{{log}}'
+            case " $* " in
+              *" -hwaccel qsv "*)
+                {
+                  echo "Output #0, null, to 'pipe:':"
+                  echo "  Stream #0:0: Video: wrapped_avframe, nv12, 640x360 [SAR 1:1 DAR 16:9]"
+                  i=0
+                  while [ $i -lt {{qsvSamples}} ]; do
+                    echo "[Parsed_cropdetect_3 @ 0x1] x1:0 x2:639 y1:46 y2:313 w:640 h:268 x:0 y:46 pts:$i t:$((i * 2)).000000"
+                    i=$((i + 1))
+                  done
+                } >&2
+                exit 0;;
+            esac
+            exec '{{ffmpeg}}' "$@"
+            """);
+        if (OperatingSystem.IsLinux())
+            File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        return (script, log);
+    }
+
+    private static readonly string[] OneKeyframe = { "-g", "100000", "-keyint_min", "100000", "-sc_threshold", "0", "-x264-params", "scenecut=0" };
+
+    [SkippableTheory]
+    [InlineData(65, true)]
+    [InlineData(10, false)]
+    public async Task EndToEnd_SparseKeyframesOnQsv_UseQsvUnlessItLosesFrames(int qsvSamples, bool qsvUsed)
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        Skip.IfNot(OperatingSystem.IsLinux(), "QSV decoding is Linux only");
+        var (fake, log) = FakeQsvFfmpeg(ffmpeg!, qsvSamples);
+        var clip = MakeClip(ffmpeg!, "sparse-qsv.mp4", "yuv420p", OneKeyframe, (130, 320));
+        Plugin.Instance!.Configuration.HardwareDecoding = true;
+        var qsv = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.qsv, QsvDevice = "/dev/dri/does-not-exist" };
+
+        var result = await Scan(fake, MovieAt(clip), qsv);
+
+        Assert.Equal(AnalysisSources.Frames, result.AnalysisSource);
+        Assert.Contains(File.ReadAllLines(log), call => call.Contains("-hwaccel qsv", StringComparison.Ordinal) && call.Contains("hwdownload,format=nv12", StringComparison.Ordinal));
+        if (qsvUsed)
+        {
+            Assert.Equal(qsvSamples, result.Keyframes);
+            AssertBox(new CropBox(0, 46, 640, 268), result.Crop);
+        }
+        else
+        {
+            // The real ffmpeg measured it after the short QSV run: the VAAPI device is gone too, so the CPU.
+            Assert.InRange(result.Keyframes, 60, 70);
+            AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
+        }
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_SparseKeyframesOnFailingQsv_FallBackToTheUsualPath()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        Skip.IfNot(OperatingSystem.IsLinux(), "QSV decoding is Linux only");
+        var qsv = new EncodingOptions { HardwareAccelerationType = HardwareAccelerationType.qsv, QsvDevice = "/dev/dri/does-not-exist" };
+
+        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "sparse-qsv-fails.mp4", "yuv420p", OneKeyframe, (130, 320)), qsv);
+
+        Assert.Null(result.Error);
+        Assert.Equal(AnalysisSources.Frames, result.AnalysisSource);
+        Assert.InRange(result.Keyframes, 60, 70);
+        AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
     }
 
     [Fact]

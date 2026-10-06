@@ -167,10 +167,12 @@ public class CropScanner
 
     /// <summary>
     /// The exact scan: every keyframe, or with <paramref name="everyTwoSeconds"/> every frame decoded
-    /// and one measured per 2 seconds, for files with too few keyframes.
+    /// and one measured per 2 seconds, for files with too few keyframes. With
+    /// <paramref name="hardwareDownload"/>, frames stay on the GPU until select picked one, which is
+    /// then downloaded in that pixel format.
     /// </summary>
     internal static IReadOnlyList<string> Arguments(
-        string path, IReadOnlyList<string>? hardwareDecoding = null, bool everyTwoSeconds = false)
+        string path, IReadOnlyList<string>? hardwareDecoding = null, bool everyTwoSeconds = false, string? hardwareDownload = null)
         => new[] { "-hide_banner", "-nostats", "-nostdin" }
             .Concat(everyTwoSeconds ? Array.Empty<string>() : new[] { "-skip_frame", "nokey" })
             .Concat(hardwareDecoding ?? Array.Empty<string>())
@@ -182,7 +184,9 @@ public class CropScanner
                 // A fractional limit is scaled to the pixel format's bit depth: 24/255 for 8-bit, and the
                 // same relative level for 10-bit, whose black sits at 64 rather than 16. skip=0 keeps the
                 // first keyframes, which cropdetect would otherwise ignore.
-                "-vf", everyTwoSeconds ? $"{EveryTwoSeconds},{Cropdetect}" : Cropdetect,
+                "-vf", !everyTwoSeconds ? Cropdetect
+                    : hardwareDownload != null ? $"{EveryTwoSeconds},hwdownload,format={hardwareDownload},{Cropdetect}"
+                    : $"{EveryTwoSeconds},{Cropdetect}",
                 "-an", "-sn", "-dn",
                 "-f", "null", "-",
             })
@@ -212,14 +216,13 @@ public class CropScanner
     /// <summary>
     /// Decoder arguments for the GPU Jellyfin itself is set up to use. Decoding is bit-exact, so the
     /// GPU finds the same picture as the CPU, just faster (3x on HEVC with an Intel iGPU). Frames come
-    /// back to system memory for cropdetect. On Linux, QSV sits on top of VAAPI, so both use VAAPI.
+    /// back to system memory for cropdetect. On Linux, QSV sits on top of VAAPI, so both use VAAPI, except
+    /// for the 2-second pass (<see cref="QsvFramesDecoding"/>).
     /// </summary>
     internal static IReadOnlyList<string>? HardwareDecodingArguments(EncodingOptions? encoding)
     {
         if (encoding == null)
             return null;
-
-        static string Device(string? configured) => string.IsNullOrWhiteSpace(configured) ? "/dev/dri/renderD128" : configured;
 
         return encoding.HardwareAccelerationType switch
         {
@@ -231,6 +234,40 @@ public class CropScanner
             _ => null,
         };
     }
+
+    /// <summary>
+    /// The 2-second pass on Intel QSV (Linux). Frames stay on the GPU until select picked one, so only
+    /// those are copied to system memory: 23 s instead of 52 s for 5 minutes of a Blu-ray remux on a
+    /// Pentium Gold 8505, with byte-identical cropdetect output. Only for 8-bit and 10-bit 4:2:0 (from
+    /// the keyframe pass), whose surfaces download as nv12 and p010le; anything else takes the usual path.
+    /// </summary>
+    internal static (IReadOnlyList<string> Decoding, string Download)? QsvFramesDecoding(EncodingOptions? encoding, string? pixelFormat)
+    {
+        var download = pixelFormat switch
+        {
+            "yuv420p" or "yuvj420p" or "nv12" => "nv12",
+            "yuv420p10le" or "p010le" => "p010le",
+            _ => null,
+        };
+        if (download == null || encoding is not { HardwareAccelerationType: HardwareAccelerationType.qsv } || !OperatingSystem.IsLinux())
+            return null;
+
+        return (new[]
+        {
+            "-init_hw_device", $"vaapi=va:{Device(encoding.QsvDevice ?? encoding.VaapiDevice)}",
+            "-init_hw_device", "qsv=qs@va",
+            "-hwaccel", "qsv", "-hwaccel_output_format", "qsv",
+        }, download);
+    }
+
+    /// <summary>
+    /// The QSV pass must give about one sample per 2 seconds. Its broken VAAPI twin silently dropped
+    /// three quarters of the frames, so a short count is never trusted.
+    /// </summary>
+    internal static bool EnoughFrames(int samples, double durationSeconds)
+        => samples > 0 && samples >= 0.9 * durationSeconds / 2;
+
+    private static string Device(string? configured) => string.IsNullOrWhiteSpace(configured) ? "/dev/dri/renderD128" : configured;
 
     public async Task<CropResult> ScanAsync(BaseItem item, CancellationToken cancellationToken)
     {
@@ -288,9 +325,10 @@ public class CropScanner
             return result;
         }
 
-        var hardware = Plugin.Instance?.Configuration.HardwareDecoding == false
+        var encoding = Plugin.Instance?.Configuration.HardwareDecoding == false
             ? null
-            : HardwareDecodingArguments(_configurationManager.GetConfiguration("encoding") as EncodingOptions);
+            : _configurationManager.GetConfiguration("encoding") as EncodingOptions;
+        var hardware = HardwareDecodingArguments(encoding);
         var (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: false, cancellationToken).ConfigureAwait(false);
         result.AnalysisSource = AnalysisSources.Keyframes;
 
@@ -300,7 +338,7 @@ public class CropScanner
             _logger.LogInformation(
                 "AutoCrop: only {Keyframes} keyframes in {Minutes:0} minutes of {Path}, measuring a frame every 2 seconds",
                 parser.Samples.Count, duration / 60, path);
-            (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: true, cancellationToken).ConfigureAwait(false);
+            (parser, error) = await DetectFramesAsync(path, encoding, parser, cancellationToken).ConfigureAwait(false);
             result.AnalysisSource = AnalysisSources.Frames;
         }
 
@@ -326,6 +364,30 @@ public class CropScanner
             "AutoCrop scanned {Name}: {Keyframes} {Source} in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
             item.Name, result.Keyframes, result.AnalysisSource, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
         return result;
+    }
+
+    /// <summary>
+    /// The 2-second pass, on QSV when Jellyfin uses it and the keyframe pass saw a format it can
+    /// download. A failed or short QSV run falls back to the usual path.
+    /// </summary>
+    private async Task<(CropdetectParser Parser, string? Error)> DetectFramesAsync(
+        string path, EncodingOptions? encoding, CropdetectParser keyframePass, CancellationToken cancellationToken)
+    {
+        if (QsvFramesDecoding(encoding, keyframePass.PixelFormat) is var (decoding, download))
+        {
+            var parser = new CropdetectParser();
+            var (exitCode, lastLine) = await RunFfmpegAsync(
+                Arguments(path, decoding, everyTwoSeconds: true, download), parser, cancellationToken).ConfigureAwait(false);
+            var duration = keyframePass.DurationSeconds ?? 0;
+            if (exitCode == 0 && EnoughFrames(parser.Samples.Count, duration))
+                return (parser, null);
+
+            _logger.LogInformation(
+                "AutoCrop: QSV gave {Samples} samples for {Seconds:0}s of {Path} ({LastLine}), measuring the usual way",
+                parser.Samples.Count, duration, path, lastLine);
+        }
+
+        return await DetectAsync(path, HardwareDecodingArguments(encoding), everyTwoSeconds: true, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<(CropdetectParser Parser, string? Error)> DetectAsync(
