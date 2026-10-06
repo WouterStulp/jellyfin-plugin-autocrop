@@ -30,6 +30,7 @@ public class AutoCropControllerTests : IDisposable
     public AutoCropControllerTests()
     {
         TestPlugin.Create(_dir);
+        LibraryTitles.ResetForTesting();
         _users.GetUserById(_alice.Id).Returns(_alice);
         _store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
         _scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), Substitute.For<MediaBrowser.Controller.Trickplay.ITrickplayManager>(), _store, NullLogger<CropScanner>.Instance);
@@ -223,6 +224,25 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal("Severance · S01E02", row.GetProperty("title").GetString());
         Assert.Equal("failed", row.GetProperty("status").GetString());
         Assert.Equal("Unreadable file", row.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public void Results_TakeTitlesFromOneLibraryQuery_NotALookupPerResult()
+    {
+        var movies = Enumerable.Range(0, 30).Select(i => new Movie { Id = Guid.NewGuid(), Name = $"Film {i:00}", Path = $"/media/film{i}.mkv" }).ToList();
+        foreach (var movie in movies)
+            _store.Set(new CropResult { ItemId = movie.Id, Path = movie.Path, FrameWidth = 1920, FrameHeight = 1080, Crop = CropBox.Full(1920, 1080), ScannedAtUtc = DateTime.UtcNow });
+        _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns(movies.Cast<BaseItem>().ToList());
+        var controller = Controller(_alice.Id);
+
+        var page = Json(controller.GetResults(limit: 25));
+        var search = Json(controller.GetResults(search: "Film 07"));
+        Json(controller.GetStats());
+
+        Assert.Equal(25, page.GetProperty("items").GetArrayLength());
+        Assert.Equal("Film 07", search.GetProperty("items")[0].GetProperty("title").GetString());
+        _library.Received(1).GetItemList(Arg.Any<InternalItemsQuery>());
+        _library.DidNotReceive().GetItemById(Arg.Any<Guid>());
     }
 
     [Theory]
