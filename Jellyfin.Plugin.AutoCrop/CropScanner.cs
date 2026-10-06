@@ -78,13 +78,23 @@ public class CropScanner
         return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds);
     }
 
-    /// <summary>Fills in a result's crop and segments from its keyframes.</summary>
+    /// <summary>
+    /// Fills in a result's crop and segments from its keyframes, snapped outward to standard aspect
+    /// ratios. A suspicious whole-file picture means no crop at all, with the reason.
+    /// </summary>
     internal static void Analyse(CropResult result, IReadOnlyList<KeyframeSample> samples, double durationSeconds, AnalyzerOptions options)
     {
-        var segments = CropAnalyzer.Segments(samples, result.FrameWidth, result.FrameHeight, durationSeconds, options);
+        var (width, height, pixelAspect) = (result.FrameWidth, result.FrameHeight, result.PixelAspect ?? 1);
+        var union = CropAnalyzer.Union(samples, width, height, options.MinimumBarPercent);
+        var (crop, suspicious) = CropAnalyzer.Snap(union, width, height, pixelAspect);
+        var segments = suspicious != null
+            ? Array.Empty<CropSegment>()
+            : CropAnalyzer.SnapSegments(CropAnalyzer.Segments(samples, width, height, durationSeconds, options), crop, width, height, pixelAspect);
+
         result.Keyframes = samples.Count;
-        result.Crop = CropAnalyzer.Union(samples, result.FrameWidth, result.FrameHeight, options.MinimumBarPercent);
+        result.Crop = suspicious != null ? CropBox.Full(width, height) : crop;
         result.Segments = segments.Count > 1 ? segments.ToList() : null;
+        result.SuspiciousReason = suspicious;
         result.AnalysisVersion = CropAnalyzer.Version;
     }
 
@@ -293,6 +303,7 @@ public class CropScanner
 
         result.FrameWidth = width;
         result.FrameHeight = height;
+        result.PixelAspect = parser.PixelAspect;
         Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, Options());
         _store.SetSamples(item.Id, parser.DurationSeconds ?? 0, parser.Samples);
 

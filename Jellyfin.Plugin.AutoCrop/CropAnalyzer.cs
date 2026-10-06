@@ -20,10 +20,72 @@ public static class CropAnalyzer
     /// <summary>
     /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     /// <summary>Fewer trickplay thumbnails with picture than this prove nothing.</summary>
     internal const int MinimumThumbnails = 20;
+
+    /// <summary>Display aspect ratios that films and series are made in.</summary>
+    internal static readonly double[] StandardRatios =
+    {
+        4.0 / 3, 1.375, 1.43, 1.66, 16.0 / 9, 1.85, 1.90, 2.00, 2.20, 2.35, 2.39, 2.40, 2.55, 2.76,
+    };
+
+    /// <summary>
+    /// Snaps a measured crop outward to the nearest standard display aspect ratio: the long side keeps
+    /// its extent, the short side grows evenly around the box (shifted inside the frame at an edge), so
+    /// no measured picture is ever cut. When the frame is too small for that, the box stays as measured.
+    /// Returns why the box can't be a real picture shape instead when it is suspicious: no standard
+    /// ratio within 1.5%, a ratio outside 1.25-2.90, or less than half the frame. The full frame is
+    /// never suspicious. <paramref name="pixelAspect"/> is the stream's sample aspect ratio (SAR).
+    /// </summary>
+    public static (CropBox Box, string? Suspicious) Snap(CropBox box, int frameWidth, int frameHeight, double pixelAspect = 1)
+    {
+        if (box == CropBox.Full(frameWidth, frameHeight) || box.Width <= 0 || box.Height <= 0)
+            return (box, null);
+
+        var ratio = box.Width * pixelAspect / box.Height;
+        if (ratio is < 1.25 or > 2.90)
+            return (box, FormattableString.Invariant($"Picture {ratio:0.00}:1 is outside 1.25:1 to 2.90:1"));
+
+        var standard = StandardRatios.MinBy(r => Math.Abs(ratio - r) / r);
+        if (Math.Abs(ratio - standard) / standard > 0.015)
+            return (box, FormattableString.Invariant($"Picture {ratio:0.00}:1 is no standard aspect ratio"));
+
+        var snapped = box;
+        if (ratio < standard)
+        {
+            var width = (int)Math.Ceiling((box.Height * standard / pixelAspect) - 1e-6);
+            if (width <= frameWidth)
+                snapped = box with { X = Grow(box.X, box.Width, width, frameWidth), Width = width };
+        }
+        else
+        {
+            var height = (int)Math.Ceiling((box.Width * pixelAspect / standard) - 1e-6);
+            if (height <= frameHeight)
+                snapped = box with { Y = Grow(box.Y, box.Height, height, frameHeight), Height = height };
+        }
+
+        if (snapped.Area * 2 < (long)frameWidth * frameHeight)
+            return (box, FormattableString.Invariant($"Picture covers only {100.0 * snapped.Area / ((long)frameWidth * frameHeight):0}% of the frame"));
+
+        return (snapped, null);
+    }
+
+    /// <summary>
+    /// Snaps every segment like <see cref="Snap"/>; a suspicious one gets the whole-file
+    /// <paramref name="crop"/>, which contains every keyframe. Neighbours that end up equal are joined.
+    /// </summary>
+    public static IReadOnlyList<CropSegment> SnapSegments(
+        IReadOnlyList<CropSegment> segments, CropBox crop, int frameWidth, int frameHeight, double pixelAspect = 1)
+        => MergeSimilar(
+            segments.Select(s => s with { Box = Snap(s.Box, frameWidth, frameHeight, pixelAspect) is (var box, null) ? box : crop }).ToList(),
+            0,
+            0);
+
+    // The new start of a side grown from length to size, centred on the old one and kept in the frame.
+    private static int Grow(int start, int length, int size, int frame)
+        => Math.Clamp(start - ((size - length) / 2), 0, frame - size);
 
     /// <summary>
     /// The whole-file picture area: the union over every keyframe that isn't fully black. A row or

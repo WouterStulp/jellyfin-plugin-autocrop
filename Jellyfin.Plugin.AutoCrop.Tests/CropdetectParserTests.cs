@@ -75,6 +75,18 @@ public class CropdetectParserTests
         Assert.Equal(1080, parser.FrameHeight);
     }
 
+    [Theory]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], q=2-31", 1.0)]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, yuv420p, 720x480 [SAR 32:27 DAR 16:9], q=2-31", 32.0 / 27)]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, yuv420p, 720x480 [SAR 0:1 DAR 0:1], q=2-31", null)]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, yuv420p, 1920x804, q=2-31", null)]
+    public void PixelAspect_ComesFromTheOutputStream(string line, double? expected)
+    {
+        var parser = Parse("Output #0, null, to 'pipe:':\n" + line);
+
+        Assert.Equal(expected, parser.PixelAspect);
+    }
+
     [Fact]
     public void Duration_IsParsed()
     {

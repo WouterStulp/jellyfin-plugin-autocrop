@@ -227,6 +227,28 @@ public class CropScannerTests : IDisposable
     }
 
     [Fact]
+    public void Reanalyse_Version2Result_IsSnappedAndCheckedWithoutFfmpeg()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (scope, _) = OutdatedResult(store);
+        var (strip, _) = OutdatedResult(store);
+        store.Get(scope.Id)!.AnalysisVersion = 2;
+        store.Get(strip.Id)!.AnalysisVersion = 2;
+        store.SetSamples(scope.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, new CropBox(0, 139, 1920, 802))).ToList());
+        store.SetSamples(strip.Id, 60, Enumerable.Range(0, 30).Select(i => new KeyframeSample(i * 2, new CropBox(375, 441, 1169, 197))).ToList());
+
+        Assert.Equal(2, scanner.Reanalyse(outdatedOnly: true).Reanalysed);
+
+        Assert.Equal(new CropBox(0, 138, 1920, 804), Store().Get(scope.Id)!.Crop);
+        var suspicious = Store().Get(strip.Id)!;
+        Assert.True(suspicious.Suspicious);
+        Assert.Equal(CropBox.Full(1920, 1080), suspicious.Crop);
+        Assert.Equal(CropAnalyzer.Version, suspicious.AnalysisVersion);
+        Assert.False(scanner.NeedsScan(strip));
+    }
+
+    [Fact]
     public void Reanalyse_OutdatedResultWithoutKeyframes_NeedsAScan()
     {
         var store = Store();

@@ -124,6 +124,7 @@ public class AutoCropController : ControllerBase
             withBars = scanned.Count(r => r.HasCrop),
             perScene = scanned.Count(r => r.IsPerScene),
             byTrickplay = scanned.Count(r => r.AnalysisSource == AnalysisSources.Trickplay),
+            suspicious = scanned.Count(r => r.Suspicious),
             failed = results.Count - scanned.Count,
             pending,
             queued = _queue.PendingCount,
@@ -157,6 +158,7 @@ public class AutoCropController : ControllerBase
                 title = x.Title,
                 status = Status(x.Result),
                 error = x.Result.Error,
+                suspiciousReason = x.Result.Suspicious ? x.Result.SuspiciousReason : null,
                 frameWidth = x.Result.FrameWidth,
                 frameHeight = x.Result.FrameHeight,
                 crop = x.Result.Crop,
@@ -180,6 +182,7 @@ public class AutoCropController : ControllerBase
 
     internal static string Status(CropResult result)
         => result.Failed ? "failed"
+            : result.Suspicious ? "suspicious"
             : result.IsPerScene ? "per-scene"
             : result.HasCrop ? "bars"
             : "no-bars";
@@ -188,7 +191,8 @@ public class AutoCropController : ControllerBase
     {
         "bars" => result.HasCrop,
         "per-scene" => result.IsPerScene,
-        "no-bars" => !result.Failed && !result.HasCrop,
+        "no-bars" => !result.Failed && !result.HasCrop && !result.Suspicious,
+        "suspicious" => result.Suspicious,
         "failed" => result.Failed,
         _ => true,
     };
