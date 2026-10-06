@@ -159,6 +159,7 @@
                                     <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
                                     <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
                                 </label>
+                                <label class="ac-check"><input type="checkbox" id="acZoomSubtitles" /><span>Zoom styled (ASS) subtitles with the picture<span class="desc" style="display:block;">Keeps signs and positioned text on their spot in the zoomed picture. Blu-ray (PGS) and DVD subtitles always stay on the whole frame, since they are often placed in the black bars.</span></span></label>
                                 <label class="ac-field"><span class="ac-label">Transition (ms)</span>
                                     <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
                                     <span class="desc">How long the zoom takes to follow a scene change; 0 switches instantly.</span>
@@ -397,6 +398,7 @@
                             $('acMinBar').value = c.MinimumBarPercent;
                             $('acMinSegment').value = c.MinimumSegmentSeconds;
                             $('acTransition').value = c.TransitionMs;
+                            $('acZoomSubtitles').checked = c.ZoomStyledSubtitles !== false;
                         });
                     }
 
@@ -416,6 +418,7 @@
                             c.MinimumBarPercent = number('acMinBar', 1);
                             c.MinimumSegmentSeconds = number('acMinSegment', 30);
                             c.TransitionMs = Math.round(number('acTransition', 300));
+                            c.ZoomStyledSubtitles = $('acZoomSubtitles').checked;
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
                         }).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);

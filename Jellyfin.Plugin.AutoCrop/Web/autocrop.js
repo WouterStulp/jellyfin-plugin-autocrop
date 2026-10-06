@@ -9,6 +9,9 @@
     var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
     var MENU_LABEL = 'Crop black bars';
+    // The canvas JavascriptSubtitlesOctopus (@jellyfin/libass-wasm) draws ASS/SSA on, in jellyfin-web
+    // 10.11 and 12. PGS and VobSub (libpgs, libbitsub) draw on canvases without a class.
+    var ASS_CANVAS_CLASS = 'libassjs-canvas';
     var VIDEO_EVENTS = ['timeupdate', 'loadedmetadata', 'play', 'playing', 'pause', 'ratechange'];
     // Lands just past a boundary rather than just before it, where nothing would change yet.
     var BOUNDARY_MARGIN_MS = 15;
@@ -157,6 +160,7 @@
             computeTransform: computeTransform,
             segmentAt: segmentAt,
             nextBoundaryDelay: nextBoundaryDelay,
+            canvasTransform: canvasTransform,
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
@@ -298,9 +302,18 @@
         }
     }
 
-    // ASS and PGS subtitles draw on canvases beside the video, placed by their renderers from the
-    // video's size. Keep them over the whole frame as Jellyfin shows it without the zoom, so they
-    // stay on screen and readable (positioned signs won't line up with the zoomed picture).
+    /**
+     * The transform for a subtitle canvas: the video's own for ASS/SSA, so positioned signs stay on
+     * their spot in the picture; none for anything else. Bitmap subtitles (PGS, VobSub) are often
+     * placed inside the black bars and would be pushed off screen, and an unknown canvas is left alone.
+     */
+    function canvasTransform(className, videoCss, zoomStyled) {
+        return zoomStyled && (' ' + (className || '') + ' ').indexOf(' ' + ASS_CANVAS_CLASS + ' ') >= 0 ? videoCss : '';
+    }
+
+    // Subtitle renderers draw on canvases beside the video, placed from the video's size, some from its
+    // transformed bounds. Keep them over the whole frame as Jellyfin shows it without the zoom. The
+    // ASS canvas then gets the video's transform around the same centre, so it zooms exactly along.
     function placeCanvases(video) {
         var container = video.parentNode;
         if (!container || !video.videoWidth) {
@@ -324,6 +337,29 @@
                 canvas.style.top = top;
                 canvas.style.width = width;
                 canvas.style.height = height;
+            }
+
+            // Compared with what was set, not read back: browsers rewrite transform strings.
+            var transform = canvasTransform(canvas.className, state.css, state.data && state.data.zoomStyledSubtitles);
+            if ((canvas.autocropTransform || '') !== transform) {
+                canvas.autocropTransform = transform;
+                canvas.style.transition = transform ? video.style.transition : '';
+                canvas.style.transformOrigin = transform ? '50% 50%' : '';
+                canvas.style.transform = transform;
+            }
+        }
+    }
+
+    // A renderer that adds or moves its canvas (a subtitle track chosen, its own resize) would put it
+    // over the zoomed video's bounds; put it back while zoomed.
+    function onPlayerMutations(mutations) {
+        if (!state.css || !state.video) {
+            return;
+        }
+        for (var i = 0; i < mutations.length; i++) {
+            if (mutations[i].addedNodes.length || mutations[i].target.tagName === 'CANVAS') {
+                placeCanvases(state.video);
+                return;
             }
         }
     }
@@ -430,6 +466,10 @@
         // The player can change size without the window doing so.
         if (window.ResizeObserver) {
             new window.ResizeObserver(refresh).observe(video);
+        }
+        if (window.MutationObserver && video.parentNode) {
+            new window.MutationObserver(onPlayerMutations).observe(video.parentNode,
+                { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
         }
     }
 

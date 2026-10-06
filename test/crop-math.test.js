@@ -123,6 +123,17 @@ var tests = {
         assert.strictEqual(crop.nextBoundaryDelay(null, 100, 1), null, 'static file');
     },
 
+    'ASS/SSA canvases zoom with the video, bitmap and unknown canvases never do': function () {
+        var css = 'translate(0.00px, 0.00px) scale(1.3333)';
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', css, true), css, 'JavascriptSubtitlesOctopus');
+        assert.strictEqual(crop.canvasTransform('foo libassjs-canvas', css, true), css, 'with another class');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', css, false), '', 'setting off');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', '', true), '', 'no zoom');
+        assert.strictEqual(crop.canvasTransform('', css, true), '', 'libpgs and libbitsub canvases have no class');
+        assert.strictEqual(crop.canvasTransform(undefined, css, true), '');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas-parent', css, true), '', 'only the canvas itself');
+    },
+
     'the c key cycles per-scene, static, off': function () {
         assert.strictEqual(crop.nextMode('per-scene'), 'static');
         assert.strictEqual(crop.nextMode('static'), 'off');

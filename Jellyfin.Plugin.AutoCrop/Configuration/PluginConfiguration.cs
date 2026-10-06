@@ -23,6 +23,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public int TransitionMs { get; set; } = 300;
 
+    /// <summary>
+    /// Zooms ASS/SSA subtitles with the picture, so positioned signs stay on their spot. Bitmap subtitles
+    /// (PGS, VobSub) never zoom: they are often placed in the black bars.
+    /// </summary>
+    public bool ZoomStyledSubtitles { get; set; } = true;
+
     /// <summary>Decode on the GPU Jellyfin is set up for (Dashboard > Playback > Transcoding); the CPU is the fallback.</summary>
     public bool HardwareDecoding { get; set; } = true;
 

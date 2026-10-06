@@ -80,6 +80,7 @@ public class AutoCropController : ControllerBase
             defaultMode = CropModes.Effective(config?.ModeOverrides ?? new List<ModeOverride>(), config?.DefaultMode, Scopes(item!)),
             seriesId = (item is Episode { SeriesId: var series } && series != Guid.Empty ? series : item!.Id).ToString("N"),
             transitionMs = config?.TransitionMs ?? 300,
+            zoomStyledSubtitles = config?.ZoomStyledSubtitles ?? true,
         });
     }
 

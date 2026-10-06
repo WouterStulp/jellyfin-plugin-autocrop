@@ -47,6 +47,7 @@ Go to **Dashboard → Plugins → AutoCrop**.
   - minimum bar size (1%)
   - minimum scene length (30 s)
   - zoom transition (300 ms)
+  - zoom styled (ASS) subtitles with the picture (on)
   - GPU decoding (on)
   - use trickplay images to speed up scanning (on)
 
@@ -60,7 +61,7 @@ Files marked **suspicious** gave a result that doesn't look like any real film s
 ## Limitations
 
 - **Browser only.** It works in Jellyfin's web player (also inside apps that use it, like Jellyfin Media Player). Android TV, Swiftfin, Infuse and Kodi aren't supported.
-- **Styled subtitles** (ASS/SSA, Blu-ray PGS) stay readable, but signs placed on screen may not line up exactly with the zoomed picture. Normal subtitles are fine.
+- **Blu-ray (PGS) and DVD subtitles** stay on the whole, unzoomed frame, because they are often placed in the black bars. Styled ASS/SSA subtitles zoom with the picture, so signs stay on their spot (turn that off in the settings). Normal subtitles are fine.
 
 ## More
 

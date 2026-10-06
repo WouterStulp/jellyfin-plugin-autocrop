@@ -105,6 +105,16 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal(600, json.GetProperty("segments")[1].GetProperty("start").GetDouble());
         Assert.Equal("static", json.GetProperty("defaultMode").GetString());
         Assert.Equal(0, json.GetProperty("transitionMs").GetInt32());
+        Assert.True(json.GetProperty("zoomStyledSubtitles").GetBoolean());
+    }
+
+    [Fact]
+    public void GetItem_StyledSubtitleZoom_CanBeTurnedOff()
+    {
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960));
+        Plugin.Instance!.Configuration.ZoomStyledSubtitles = false;
+
+        Assert.False(Json(Controller(_alice.Id).GetItem(movie.Id)).GetProperty("zoomStyledSubtitles").GetBoolean());
     }
 
     private Episode ScannedEpisode(Guid seriesId, Guid libraryId)
