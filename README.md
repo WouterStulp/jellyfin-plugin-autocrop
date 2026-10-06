@@ -11,6 +11,7 @@ Some files carry their letterbox inside the frame: a 2:1 film stored as 1920×10
 - **Per scene, for films that change shape.** IMAX releases switch between 2.39:1 and 1.90:1. In per-scene mode the player follows those changes and zooms as far as each scene allows, without ever cutting off picture.
 - **Only zooms when it helps.** A 2:1 picture in a 16:9 frame on a 16:9 screen already fills the width, so nothing changes. On a 21:9 screen it zooms in until the bars are gone.
 - **Letterbox and pillarbox.** Bars at the top and bottom, the sides, or both.
+- **Standard shapes.** Every crop is widened to the nearest standard aspect ratio (2.39:1, 1.85:1, 4:3, ...), never narrowed. A measurement that matches no real film shape isn't trusted and nothing is cropped.
 - **Scans in the background.** New movies and episodes are scanned after they're added, and a nightly task catches anything missed or changed. One file at a time, at the lowest CPU priority.
 - **Dashboard.** See what every scan found, rescan single items, and change the settings.
 
@@ -23,6 +24,13 @@ Some files carry their letterbox inside the frame: a 2:1 film stored as 1920×10
 | **Off** | Jellyfin's normal playback. |
 
 The server default is set on the plugin's settings page. Each viewer can override it in their own browser: press **c** during playback to cycle per scene → static → off. A short message shows the new mode, and the choice is remembered in that browser.
+
+The player's own **Aspect ratio** menu (the gear icon) gets a fourth option, **Crop black bars**, below Auto, Cover and Fill:
+
+- Choosing it sets Jellyfin's aspect ratio to Auto and turns AutoCrop on in this browser, in the mode you last used, or the server default. It shows the check mark while AutoCrop is on.
+- Choosing Auto, Cover or Fill turns AutoCrop off in this browser.
+- The menu and the **c** key share the same setting, so they always agree.
+- The menu is recognised by its option values (`auto`, `cover`, `fill`), not by its translated text. If a Jellyfin version builds it differently, the option simply doesn't appear; the **c** key still works.
 
 AutoCrop only acts when Jellyfin's own aspect ratio setting is **Auto**. Choose Cover or Fill in the player and AutoCrop stays out of the way.
 
@@ -50,9 +58,9 @@ Requires Jellyfin 10.11.9 or later, including 12.x. ffmpeg is the one Jellyfin a
 **Dashboard → Plugins → AutoCrop** has two views.
 
 **Overview**
-- Counts: scanned, with bars, per scene (more than one segment), by trickplay (settled from the thumbnails without decoding the file), pending (not scanned yet), failed.
+- Counts: scanned, with bars, per scene (more than one segment), by trickplay (settled from the thumbnails without decoding the file), suspicious (see Standard aspect ratios), pending (not scanned yet), failed.
 - A table of every scanned item: title, frame size, picture size and aspect ratio (e.g. 1920×960 · 2.00:1), number of segments with a small timeline of where the shape changes, scan date (dd-mm-yy) with what it was measured on (`trickplay`, `keyframes` or `frames`), and status.
-- Search, filters (all / with bars / per scene / no bars / failed), paging, and a **Rescan** button per row.
+- Search, filters (all / with bars / per scene / no bars / suspicious / failed), paging, and a **Rescan** button per row. Hover a suspicious or failed status for the reason.
 - Failed scans show ffmpeg's reason. They aren't retried every night; use Rescan, or they're retried automatically once the file changes.
 - **Scan library now** runs the scheduled task and shows its progress.
 
@@ -110,7 +118,7 @@ Some Blu-ray remuxes flag hardly any keyframes (three in a 24-minute episode), a
 -vf "select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',cropdetect=limit=0.094:round=2:reset=1:skip=0"
 ```
 
-The analysis is the same; the result's source is `frames` instead of `keyframes`.
+The analysis is the same; the result's source is `frames` instead of `keyframes`. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
 
 From those keyframes the plugin builds:
 
@@ -126,12 +134,28 @@ From those keyframes the plugin builds:
 
 Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
 
-Results are stored per item (path, file size and modification time, frame size, crop, segments, scan time, analysis version, source, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+### Standard aspect ratios
+
+Films and series are made in a handful of shapes: 1.33 (4:3), 1.375, 1.43, 1.66, 1.78 (16:9), 1.85, 1.90, 2.00, 2.20, 2.35, 2.39, 2.40, 2.55 and 2.76. After the measurement, the whole-file crop and every segment are snapped to the nearest of these:
+
+- **Only outward.** The long side keeps its measured extent and the short side grows evenly around the measured box until the ratio matches (shifted inside the frame at an edge). A measured 1920×802 (2.394:1) becomes 1920×804 (2.39:1), one row more on each side. No measured picture is ever cut.
+- When the frame is too small to grow that far, the box stays as measured. 1920×961 would need 1922 columns for 2:1, so it stays 1920×961 (1.998:1).
+- The ratio is the shape on screen: the stream's sample aspect ratio (SAR) from ffmpeg's output is applied, so an anamorphic DVD is judged by its display shape. Results scanned before this version have no SAR stored and are taken as square pixels until they are rescanned.
+
+A measurement is **suspicious** when no standard ratio lies within 1.5% of it, its ratio is outside 1.25–2.90, or it leaves less than half of the frame. Bogus boxes like that come from files that are almost entirely dark, or from a few unrepresentative frames.
+
+- A suspicious whole-file crop means **no crop** at all: the item plays uncropped, and the dashboard shows it as suspicious with the reason.
+- A suspicious segment gets the whole-file crop, which contains every keyframe.
+- The full frame (no bars) is never suspicious.
+
+On the ten real fixtures only Interstellar's 2.39:1 scenes change (1920×802 → 1920×804); the other crops already sit on a standard ratio or can't grow without leaving the frame.
+
+Results are stored per item (path, file size and modification time, frame size, sample aspect ratio, crop, segments, scan time, analysis version, source, the suspicious reason, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
 
 The keyframes make the analysis cheap to redo:
 
 - **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg. Results settled by trickplay are checked against the same rule again; one that no longer passes is dropped and queued for the keyframe scan.
-- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead.
+- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection).
 - Keyframes are deleted together with the result when an item leaves the library.
 
 ### When scans run
@@ -159,8 +183,8 @@ The plugin adds a small script to the web client's `index.html`. It does this at
 | `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, default mode and transition for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
 | `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes, and trickplay results that no longer pass, for a scan. |
-| `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay. |
-| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `failed`). |
+| `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay and how many are suspicious. |
+| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`). |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
 
 ## Development

@@ -107,6 +107,24 @@ var tests = {
         assert.strictEqual(crop.nextMode('per-scene'), 'static');
         assert.strictEqual(crop.nextMode('static'), 'off');
         assert.strictEqual(crop.nextMode('off'), 'per-scene');
+    },
+
+    'the aspect-ratio sheet is recognised by its option ids, in any order and language': function () {
+        assert.ok(crop.isAspectSheet(['auto', 'cover', 'fill']));
+        assert.ok(crop.isAspectSheet(['fill', 'auto', 'cover']));
+        assert.ok(!crop.isAspectSheet(['auto', 'cover']), 'missing fill');
+        assert.ok(!crop.isAspectSheet(['auto', 'cover', 'fill', 'autocrop']), 'already extended');
+        assert.ok(!crop.isAspectSheet(['0.5', '1', '1.25']), 'playback speed');
+        assert.ok(!crop.isAspectSheet(['Auto', 'Cover', 'Fill']), 'labels are not ids');
+        assert.ok(!crop.isAspectSheet([]));
+        assert.ok(!crop.isAspectSheet(null));
+    },
+
+    'Crop black bars keeps the chosen mode, else the server default, never off': function () {
+        assert.strictEqual(crop.enabledMode('static', 'per-scene'), 'static');
+        assert.strictEqual(crop.enabledMode('off', 'static'), 'static');
+        assert.strictEqual(crop.enabledMode('off', 'off'), 'per-scene');
+        assert.strictEqual(crop.enabledMode('off', null), 'per-scene');
     }
 };
 

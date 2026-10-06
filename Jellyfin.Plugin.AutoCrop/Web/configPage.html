@@ -46,7 +46,7 @@
                 .ac-app .ac-progress.show { display: flex; }
                 .ac-app .ac-progress .bar { flex: 1; max-width: 360px; height: 6px; border-radius: 3px; background: var(--ac-surface-2); overflow: hidden; }
                 .ac-app .ac-progress .fill { height: 100%; width: 0; background: var(--ac-primary); transition: width .4s; }
-                .ac-app .ac-tiles { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; margin-bottom: 22px; }
+                .ac-app .ac-tiles { display: grid; grid-template-columns: repeat(7, minmax(0,1fr)); gap: 12px; margin-bottom: 22px; }
                 @media (max-width: 1100px) { .ac-app .ac-tiles { grid-template-columns: repeat(3, minmax(0,1fr)); } .ac-app .ac { grid-template-columns: 1fr; } .ac-app .ac-rail { border-right: 0; border-bottom: 1px solid var(--ac-border); } }
                 .ac-app .ac-tile { background: var(--ac-surface); border: 1px solid var(--ac-border); border-radius: var(--ac-r); padding: 15px 16px; box-shadow: var(--ac-shadow); position: relative; overflow: hidden; }
                 .ac-app .ac-tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--ac-primary)); }
@@ -69,6 +69,7 @@
                 .ac-app .ac-pill.bars { color: var(--ac-primary); background: var(--ac-primary-soft); }
                 .ac-app .ac-pill.per-scene { color: var(--ac-scene); background: rgba(167,139,250,.14); }
                 .ac-app .ac-pill.no-bars { color: var(--ac-muted); background: var(--ac-surface-2); }
+                .ac-app .ac-pill.suspicious { color: var(--ac-warn); background: rgba(232,162,60,.14); cursor: help; }
                 .ac-app .ac-pill.failed { color: var(--ac-crit); background: rgba(224,113,79,.14); cursor: help; }
                 .ac-app .ac-pill.queued { color: var(--ac-warn); background: rgba(232,162,60,.14); }
                 .ac-app .ac-tag { font-family: var(--ac-mono); font-size: 10px; color: var(--ac-faint); border: 1px solid var(--ac-border-strong); padding: 0 5px; border-radius: 4px; margin-left: 6px; }
@@ -109,6 +110,7 @@
                                 <div class="ac-tile" style="--c: var(--ac-primary);"><div class="n" id="acWithBars">&ndash;</div><div class="ac-label">With bars</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-scene);"><div class="n" id="acPerScene">&ndash;</div><div class="ac-label">Per-scene</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-ok);" title="No bars in Jellyfin's trickplay thumbnails, so the file wasn't decoded"><div class="n" id="acByTrickplay">&ndash;</div><div class="ac-label">By trickplay</div></div>
+                                <div class="ac-tile" style="--c: var(--ac-warn);" title="The measured picture has no standard aspect ratio or is under half the frame, so nothing is cropped"><div class="n" id="acSuspicious">&ndash;</div><div class="ac-label">Suspicious</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-warn);"><div class="n" id="acPending">&ndash;</div><div class="ac-label">Pending</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-crit);"><div class="n" id="acFailed">&ndash;</div><div class="ac-label">Failed</div></div>
                             </div>
@@ -118,6 +120,7 @@
                                 <button type="button" class="ac-chip" data-filter="bars">With bars</button>
                                 <button type="button" class="ac-chip" data-filter="per-scene">Per-scene</button>
                                 <button type="button" class="ac-chip" data-filter="no-bars">No bars</button>
+                                <button type="button" class="ac-chip" data-filter="suspicious">Suspicious</button>
                                 <button type="button" class="ac-chip" data-filter="failed">Failed</button>
                                 <input type="search" class="ac-input ac-search" id="acSearch" placeholder="Search titles" aria-label="Search titles" />
                             </div>
@@ -208,6 +211,7 @@
                             $('acWithBars').textContent = s.withBars;
                             $('acPerScene').textContent = s.perScene;
                             $('acByTrickplay').textContent = s.byTrickplay;
+                            $('acSuspicious').textContent = s.suspicious;
                             $('acPending').textContent = s.pending + (s.queued ? ' (' + s.queued + ' queued)' : '');
                             $('acFailed').textContent = s.failed;
                         }, function () {});
@@ -227,8 +231,9 @@
                     }
 
                     function statusPill(row) {
-                        var labels = { 'bars': 'Bars', 'per-scene': 'Per-scene', 'no-bars': 'No bars', 'failed': 'Failed' };
-                        var title = row.status === 'failed' ? ' title="' + esc(row.error) + '"' : '';
+                        var labels = { 'bars': 'Bars', 'per-scene': 'Per-scene', 'no-bars': 'No bars', 'suspicious': 'Suspicious', 'failed': 'Failed' };
+                        var reason = row.status === 'failed' ? row.error : row.suspiciousReason;
+                        var title = reason ? ' title="' + esc(reason) + '"' : '';
                         return '<span class="ac-pill ' + esc(row.status) + '"' + title + '>' + esc(labels[row.status] || row.status) + '</span>';
                     }
 

@@ -42,8 +42,20 @@ public sealed class CropResult
     /// <summary>What the result was measured on, one of <see cref="AnalysisSources"/>; null for results from before sources.</summary>
     public string? AnalysisSource { get; set; }
 
+    /// <summary>The stream's sample aspect ratio (SAR) from the scan; null when unknown or from before, taken as square.</summary>
+    public double? PixelAspect { get; set; }
+
+    /// <summary>
+    /// Why the measured picture can't be a real one (no standard aspect ratio, implausible ratio, under
+    /// half the frame); then Crop is the full frame. Null otherwise.
+    /// </summary>
+    public string? SuspiciousReason { get; set; }
+
     [JsonIgnore]
     public bool Failed => Error != null;
+
+    [JsonIgnore]
+    public bool Suspicious => !Failed && SuspiciousReason != null;
 
     [JsonIgnore]
     public bool IsPerScene => !Failed && Segments is { Count: > 1 };

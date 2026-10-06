@@ -249,6 +249,24 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal("bars", row.GetProperty("status").GetString());
     }
 
+    [Fact]
+    public void Suspicious_IsItsOwnStatusFilterAndCount_AndNeverCropped()
+    {
+        var movie = ScannedMovie(CropBox.Full(1920, 1080), name: "Strip");
+        _store.Get(movie.Id)!.SuspiciousReason = "Picture 5.93:1 is outside 1.25:1 to 2.90:1";
+        ScannedMovie(CropBox.Full(1920, 1080), name: "Up");
+        var controller = Controller(_alice.Id);
+
+        var row = Json(controller.GetResults(filter: "suspicious")).GetProperty("items");
+
+        Assert.Equal(1, row.GetArrayLength());
+        Assert.Equal("suspicious", row[0].GetProperty("status").GetString());
+        Assert.Equal("Picture 5.93:1 is outside 1.25:1 to 2.90:1", row[0].GetProperty("suspiciousReason").GetString());
+        Assert.Equal(1, Json(controller.GetResults(filter: "no-bars")).GetProperty("total").GetInt32());
+        Assert.Equal(1, Json(controller.GetStats()).GetProperty("suspicious").GetInt32());
+        Assert.IsType<NotFoundResult>(controller.GetItem(movie.Id));
+    }
+
     [Theory]
     [InlineData(nameof(AutoCropController.GetItem), null)]
     [InlineData(nameof(AutoCropController.Rescan), "RequiresElevation")]

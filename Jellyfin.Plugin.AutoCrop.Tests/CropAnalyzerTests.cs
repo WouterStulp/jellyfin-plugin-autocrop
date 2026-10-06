@@ -310,4 +310,167 @@ public class CropAnalyzerTests
 
         Assert.Equal(Full, segments[^1].Box);
     }
+
+    // ----- standard aspect ratios -----
+
+    private static void AssertSnapped(CropBox measured, CropBox snapped, double ratio)
+    {
+        Assert.True(snapped.Contains(measured), $"{snapped} cuts {measured}");
+        Assert.Equal(ratio, (double)snapped.Width / snapped.Height, 2);
+    }
+
+    [Fact]
+    public void Snap_ScopeGrowsTallerTo239()
+    {
+        // 2.394:1 is nearer 2.39 than 2.40; 2.39 needs 803.3 rows, so 804, one more on each side.
+        var measured = new CropBox(0, 139, 1920, 802);
+
+        var (box, suspicious) = CropAnalyzer.Snap(measured, W, H);
+
+        Assert.Null(suspicious);
+        Assert.Equal(new CropBox(0, 138, 1920, 804), box);
+        AssertSnapped(measured, box, 2.39);
+    }
+
+    [Fact]
+    public void Snap_4KScope_GrowsTo239()
+    {
+        var measured = new CropBox(0, 277, 3840, 1606);
+
+        var (box, suspicious) = CropAnalyzer.Snap(measured, 3840, 2160);
+
+        Assert.Null(suspicious);
+        Assert.Equal(new CropBox(0, 277, 3840, 1607), box);
+        AssertSnapped(measured, box, 2.39);
+    }
+
+    [Fact]
+    public void Snap_GrowsWiderToExactly2To1_CentredOnTheMeasuredBox()
+    {
+        var measured = new CropBox(60, 60, 1800, 901);
+
+        var (box, _) = CropAnalyzer.Snap(measured, W, H);
+
+        Assert.Equal(new CropBox(59, 60, 1802, 901), box);
+        Assert.Equal(2.0, (double)box.Width / box.Height, 3);
+        AssertSnapped(measured, box, 2.0);
+    }
+
+    [Fact]
+    public void Snap_2To1ThatWouldNeedMoreThanTheFrameWidth_StaysAsMeasured()
+    {
+        // 1920x961 is 1.998:1. Exactly 2:1 would need 1922 columns or 960 rows, and 960 rows would cut
+        // one measured row: the box keeps its measured size, which is within tolerance of 2.00.
+        var measured = new CropBox(0, 59, 1920, 961);
+
+        Assert.Equal((measured, (string?)null), CropAnalyzer.Snap(measured, W, H));
+    }
+
+    [Fact]
+    public void Snap_GrowingPastAnEdge_ShiftsInsideTheFrame()
+    {
+        var measured = new CropBox(0, 0, 1920, 802);
+
+        var (box, _) = CropAnalyzer.Snap(measured, W, H);
+
+        Assert.Equal(new CropBox(0, 0, 1920, 804), box);
+    }
+
+    [Theory]
+    [InlineData(240, 0, 1440, 1080)] // 4:3 pillarbox
+    [InlineData(0, 140, 1920, 800)] // 2.40
+    [InlineData(0, 0, 1920, 1080)] // full frame, 16:9
+    public void Snap_AlreadyStandard_IsUnchanged(int x, int y, int width, int height)
+    {
+        var measured = new CropBox(x, y, width, height);
+
+        Assert.Equal((measured, (string?)null), CropAnalyzer.Snap(measured, W, H));
+    }
+
+    [Fact]
+    public void Snap_FullFrame_IsNeverSuspicious()
+    {
+        // A 1.50:1 frame isn't a standard ratio, but uncropped there is nothing to doubt.
+        Assert.Equal((CropBox.Full(720, 480), (string?)null), CropAnalyzer.Snap(CropBox.Full(720, 480), 720, 480));
+    }
+
+    [Fact]
+    public void Snap_UsesTheDisplayAspectOfNonSquarePixels()
+    {
+        // A 16:9 DVD (720x480, SAR 32:27): 720x362 is 2.36:1 on screen and snaps to 2.35.
+        var measured = new CropBox(0, 59, 720, 362);
+
+        var (box, suspicious) = CropAnalyzer.Snap(measured, 720, 480, 32.0 / 27);
+
+        Assert.Null(suspicious);
+        Assert.True(box.Contains(measured));
+        Assert.Equal(new CropBox(0, 58, 720, 364), box);
+
+        // One row is 0.3% at this height, so the ratio is as close to 2.35 as whole rows allow.
+        Assert.InRange(box.Width * 32.0 / 27 / box.Height, 2.34, 2.35);
+    }
+
+    [Fact]
+    public void Snap_BogusStrip_IsSuspicious()
+    {
+        var measured = new CropBox(375, 441, 1169, 197);
+
+        var (box, suspicious) = CropAnalyzer.Snap(measured, W, H);
+
+        Assert.Equal(measured, box);
+        Assert.Equal("Picture 5.93:1 is outside 1.25:1 to 2.90:1", suspicious);
+    }
+
+    [Fact]
+    public void Snap_NoStandardRatioNearby_IsSuspicious()
+    {
+        // 1.55:1 lies between 1.43 and 1.66, more than 1.5% from both.
+        Assert.Equal("Picture 1.55:1 is no standard aspect ratio", CropAnalyzer.Snap(new CropBox(123, 0, 1674, 1080), W, H).Suspicious);
+    }
+
+    [Fact]
+    public void Snap_UnderHalfTheFrame_IsSuspicious()
+    {
+        Assert.StartsWith("Picture covers only 26%", CropAnalyzer.Snap(new CropBox(460, 270, 1000, 540), W, H).Suspicious);
+    }
+
+    private static CropResult Analysed(IReadOnlyList<KeyframeSample> samples, double duration)
+    {
+        var result = new CropResult { FrameWidth = W, FrameHeight = H };
+        CropScanner.Analyse(result, samples, duration, Options with { MinimumSegmentSeconds = 30 });
+        return result;
+    }
+
+    [Fact]
+    public void Analyse_SuspiciousWholeFile_IsNotCropped()
+    {
+        var result = Analysed(Every2s(0, 600, new CropBox(375, 441, 1169, 197)), 600);
+
+        Assert.True(result.Suspicious);
+        Assert.Equal(Full, result.Crop);
+        Assert.Null(result.Segments);
+        Assert.False(result.HasCrop);
+    }
+
+    [Fact]
+    public void SnapSegments_SuspiciousSegment_GetsTheWholeFileCrop()
+    {
+        var strip = new CropBox(375, 441, 1169, 197);
+        var segments = new[] { new CropSegment(0, 600, Scope), new CropSegment(600, 700, strip), new CropSegment(700, 1300, Scope) };
+
+        Assert.Equal(new[] { Scope, Imax, Scope }, CropAnalyzer.SnapSegments(segments, Imax, W, H).Select(s => s.Box));
+        Assert.Equal(new[] { new CropSegment(0, 1300, Scope) }, CropAnalyzer.SnapSegments(segments, Scope, W, H));
+    }
+
+    [Fact]
+    public void Analyse_SnapsTheCropAndEverySegment()
+    {
+        var scope = new CropBox(0, 139, 1920, 802);
+        var result = Analysed(Every2s(0, 600, scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, scope)).ToList(), 1500);
+
+        // 1920x1010 is 1.901:1; 1.90 needs 1010.5 rows.
+        var imax = Imax with { Height = 1011 };
+        Assert.Equal(new[] { Scope, imax, Scope }, result.Segments!.Select(s => s.Box));
+        Assert.Equal(imax, result.Crop);
+    }
 }

@@ -35,7 +35,7 @@ public class CropFixtureTests
             parser.AddLine(line);
 
         var config = new PluginConfiguration();
-        var result = new CropResult { FrameWidth = parser.FrameWidth!.Value, FrameHeight = parser.FrameHeight!.Value };
+        var result = new CropResult { FrameWidth = parser.FrameWidth!.Value, FrameHeight = parser.FrameHeight!.Value, PixelAspect = parser.PixelAspect };
         CropScanner.Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds));
         return new Fixture(result.FrameWidth, result.FrameHeight, parser.Samples, result);
     }
@@ -59,6 +59,18 @@ public class CropFixtureTests
             var segment = fixture.Timeline.First(s => s.Start <= sample.Time && sample.Time <= s.End);
             Assert.True(segment.Box.Contains(sample.Box!), $"{name} at {sample.Time}: {sample.Box} outside {segment.Box}");
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(AllFixtures))]
+    public void RealFilms_AreNeverSuspicious(string name)
+    {
+        var fixture = Load(name);
+
+        Assert.Null(fixture.Result.SuspiciousReason);
+        Assert.All(fixture.Timeline, s => Assert.True(
+            s.Box == CropBox.Full(fixture.Width, fixture.Height) || CropAnalyzer.Snap(s.Box, fixture.Width, fixture.Height).Box == s.Box,
+            $"{name}: {s.Box} at {s.Start} isn't snapped"));
     }
 
     [Theory]
