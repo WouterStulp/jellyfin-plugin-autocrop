@@ -116,7 +116,7 @@ public class AutoCropController : ControllerBase
         var results = _store.All();
         var scanned = results.Where(r => !r.Failed).ToList();
         var known = results.Select(r => r.ItemId).ToHashSet();
-        var pending = DetectBlackBarsTask.LibraryVideos(_libraryManager).Count(i => !known.Contains(i.Id));
+        var pending = LibraryTitles.Get(_libraryManager).Keys.Count(id => !known.Contains(id));
 
         return Ok(new
         {
@@ -142,17 +142,19 @@ public class AutoCropController : ControllerBase
         [FromQuery] int limit = 25)
     {
         limit = Math.Clamp(limit, 1, 200);
+        var titles = LibraryTitles.Get(_libraryManager);
+        string TitleOf(CropResult r) => titles.TryGetValue(r.ItemId, out var title) ? title : Title(r);
+
         var rows = _store.All()
             .Where(r => MatchesFilter(r, filter))
-            .Select(r => (Result: r, Title: Title(r)))
-            .Where(x => string.IsNullOrWhiteSpace(search) || x.Title.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(x => x.Result.ScannedAtUtc)
+            .Where(r => string.IsNullOrWhiteSpace(search) || TitleOf(r).Contains(search.Trim(), StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(r => r.ScannedAtUtc)
             .ToList();
 
         return Ok(new
         {
             total = rows.Count,
-            items = rows.Skip(Math.Max(0, startIndex)).Take(limit).Select(x => new
+            items = rows.Skip(Math.Max(0, startIndex)).Take(limit).Select(r => (Result: r, Title: TitleOf(r))).Select(x => new
             {
                 itemId = x.Result.ItemId.ToString("N"),
                 title = x.Title,
@@ -202,10 +204,42 @@ public class AutoCropController : ControllerBase
         _ => true,
     };
 
+    // Only for results whose item isn't in the cached library list, e.g. one that was just removed.
     private string Title(CropResult result)
+        => _libraryManager.GetItemById(result.ItemId) is { } item ? LibraryTitles.TitleOf(item) : Path.GetFileNameWithoutExtension(result.Path);
+}
+
+/// <summary>
+/// Dashboard titles for every eligible video, from one library query instead of a lookup per result,
+/// kept for a minute so paging, filtering and the stats tile don't each query the whole library.
+/// </summary>
+internal static class LibraryTitles
+{
+    private static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(1);
+    private static readonly object Gate = new();
+    private static (DateTime BuiltAt, IReadOnlyDictionary<Guid, string> Titles)? _cache;
+
+    internal static IReadOnlyDictionary<Guid, string> Get(ILibraryManager libraryManager)
     {
-        var item = _libraryManager.GetItemById(result.ItemId);
-        return item switch
+        lock (Gate)
+        {
+            if (_cache is { } cached && DateTime.UtcNow - cached.BuiltAt < MaxAge)
+                return cached.Titles;
+
+            var titles = DetectBlackBarsTask.LibraryVideos(libraryManager).ToDictionary(i => i.Id, TitleOf);
+            _cache = (DateTime.UtcNow, titles);
+            return titles;
+        }
+    }
+
+    internal static void ResetForTesting()
+    {
+        lock (Gate)
+            _cache = null;
+    }
+
+    internal static string TitleOf(BaseItem item)
+        => item switch
         {
             Episode episode => string.Format(
                 CultureInfo.InvariantCulture,
@@ -215,8 +249,6 @@ public class AutoCropController : ControllerBase
                 episode.IndexNumber ?? 0),
             Movie { ProductionYear: { } year } movie when !movie.Name.EndsWith($"({year})", StringComparison.Ordinal)
                 => $"{movie.Name} ({year})",
-            not null => item.Name,
-            null => Path.GetFileNameWithoutExtension(result.Path),
+            _ => item.Name,
         };
-    }
 }
