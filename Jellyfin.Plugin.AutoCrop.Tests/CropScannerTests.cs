@@ -555,6 +555,29 @@ public class CropScannerTests : IDisposable
         AssertBox(new CropBox(0, 20, 640, 320), result.Crop);
     }
 
+    [Theory]
+    [InlineData(AnalysisSources.Keyframes, 3, 1440, true)] // an Evangelion remux: 3 keyframes in 24 minutes
+    [InlineData(null, 3, 1440, true)] // from before sources were stored
+    [InlineData(AnalysisSources.Keyframes, 24, 1440, false)] // one a minute is enough
+    [InlineData(AnalysisSources.Keyframes, 1, 100, false)] // under 2 minutes
+    [InlineData(AnalysisSources.Frames, 3, 1440, false)] // already measured every 2 seconds
+    public void Reanalyse_KeyframeResultWithTooFewKeyframes_IsMeasuredAgain(string? source, int keyframes, double duration, bool expected)
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, result) = OutdatedResult(store);
+        result.AnalysisSource = source;
+        result.Keyframes = keyframes;
+        store.SetSamples(movie.Id, duration, Enumerable.Range(0, keyframes).Select(i => new KeyframeSample(i * 2, new CropBox(0, 60, 1920, 960))).ToList());
+
+        var (reanalysed, needScan) = scanner.Reanalyse(outdatedOnly: true);
+
+        Assert.Equal(expected ? 0 : 1, reanalysed);
+        Assert.Equal(expected, needScan.Contains(movie.Id));
+        Assert.Equal(expected, store.Get(movie.Id) == null);
+        Assert.Equal(expected, scanner.NeedsScan(movie));
+    }
+
     [Fact]
     public void Arguments_EveryTwoSeconds_DecodesEveryFrame()
     {

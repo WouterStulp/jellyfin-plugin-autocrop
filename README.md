@@ -118,7 +118,7 @@ Some Blu-ray remuxes flag hardly any keyframes (three in a 24-minute episode), a
 -vf "select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',cropdetect=limit=0.094:round=2:reset=1:skip=0"
 ```
 
-The analysis is the same; the result's source is `frames` instead of `keyframes`.
+The analysis is the same; the result's source is `frames` instead of `keyframes`. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
 
 From those keyframes the plugin builds:
 
@@ -155,7 +155,7 @@ Results are stored per item (path, file size and modification time, frame size, 
 The keyframes make the analysis cheap to redo:
 
 - **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg. Results settled by trickplay are checked against the same rule again; one that no longer passes is dropped and queued for the keyframe scan.
-- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead.
+- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection).
 - Keyframes are deleted together with the result when an item leaves the library.
 
 ### When scans run

@@ -72,6 +72,13 @@ public class CropScanner
             && File.Exists(item.Path)
             && _store.GetCurrent(item.Id, item.Path) is not { AnalysisVersion: >= CropAnalyzer.Version };
 
+    /// <summary>
+    /// Fewer than one keyframe per minute of a file of at least 2 minutes: some remuxes flag only a
+    /// handful, and a union of three frames proves nothing. Such files are measured every 2 seconds.
+    /// </summary>
+    internal static bool TooFewKeyframes(int keyframes, double durationSeconds)
+        => durationSeconds >= 120 && keyframes < durationSeconds / 60;
+
     internal static AnalyzerOptions Options()
     {
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
@@ -102,8 +109,9 @@ public class CropScanner
     /// Recomputes scan results from their stored keyframes with the current analysis and settings,
     /// without ffmpeg. With <paramref name="outdatedOnly"/>, only results from an older analysis.
     /// Results settled by trickplay are checked against the same rule again; one that no longer passes
-    /// is dropped, so it gets the exact scan. Returns how many were recomputed and the items that need
-    /// a scan: those without stored keyframes and the dropped trickplay results.
+    /// is dropped, so it gets the exact scan. So is a keyframe result with too few keyframes, measured
+    /// before such files got the 2-second pass. Returns how many were recomputed and the items that
+    /// need a scan: those without stored keyframes and the dropped results.
     /// </summary>
     public (int Reanalysed, IReadOnlyList<Guid> NeedScan) Reanalyse(bool outdatedOnly)
     {
@@ -132,6 +140,14 @@ public class CropScanner
 
             if (stored == null)
             {
+                needScan.Add(result.ItemId);
+                continue;
+            }
+
+            if (result.AnalysisSource is null or AnalysisSources.Keyframes
+                && TooFewKeyframes(stored.Value.Samples.Count, stored.Value.DurationSeconds))
+            {
+                updates.Add((result, null));
                 needScan.Add(result.ItemId);
                 continue;
             }
@@ -278,9 +294,8 @@ public class CropScanner
         var (parser, error) = await DetectAsync(path, hardware, everyTwoSeconds: false, cancellationToken).ConfigureAwait(false);
         result.AnalysisSource = AnalysisSources.Keyframes;
 
-        // Some remuxes flag only a handful of keyframes; a union of three frames proves nothing.
         var duration = parser.DurationSeconds ?? 0;
-        if (error == null && duration >= 120 && parser.Samples.Count < duration / 60)
+        if (error == null && TooFewKeyframes(parser.Samples.Count, duration))
         {
             _logger.LogInformation(
                 "AutoCrop: only {Keyframes} keyframes in {Minutes:0} minutes of {Path}, measuring a frame every 2 seconds",
