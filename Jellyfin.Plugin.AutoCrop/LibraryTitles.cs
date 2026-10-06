@@ -15,6 +15,15 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.AutoCrop;
 
+/// <summary>A video's dashboard title, and for an episode its series.</summary>
+public sealed record LibraryEntry(string Title, Guid? SeriesId = null, string? SeriesName = null)
+{
+    internal static LibraryEntry Of(BaseItem item)
+        => item is Episode { SeriesId: var id } episode && id != Guid.Empty
+            ? new LibraryEntry(LibraryTitles.TitleOf(item), id, episode.SeriesName)
+            : new LibraryEntry(LibraryTitles.TitleOf(item));
+}
+
 /// <summary>
 /// Dashboard titles for every eligible video, from one library query instead of a lookup per result.
 /// Built in the background once Jellyfin has started, so the first dashboard visit is instant, and kept
@@ -28,7 +37,7 @@ public sealed class LibraryTitles : IHostedService, IDisposable
     private readonly IServerApplicationHost _applicationHost;
     private readonly ILogger<LibraryTitles> _logger;
     private readonly object _gate = new();
-    private (DateTime BuiltAt, ImmutableDictionary<Guid, string> Titles)? _cache;
+    private (DateTime BuiltAt, ImmutableDictionary<Guid, LibraryEntry> Titles)? _cache;
     private CancellationTokenSource? _stopping;
 
     public LibraryTitles(ILibraryManager libraryManager, IServerApplicationHost applicationHost, ILogger<LibraryTitles> logger)
@@ -39,7 +48,7 @@ public sealed class LibraryTitles : IHostedService, IDisposable
     }
 
     /// <summary>A snapshot: later library changes don't affect a dictionary already handed out.</summary>
-    public IReadOnlyDictionary<Guid, string> Get()
+    public IReadOnlyDictionary<Guid, LibraryEntry> Get()
     {
         lock (_gate)
         {
@@ -47,7 +56,7 @@ public sealed class LibraryTitles : IHostedService, IDisposable
                 return cached.Titles;
 
             // ponytail: built under the lock, so item events wait for the ~1 s query; only at startup and every 30 min.
-            var titles = DetectBlackBarsTask.LibraryVideos(_libraryManager).ToImmutableDictionary(i => i.Id, TitleOf);
+            var titles = DetectBlackBarsTask.LibraryVideos(_libraryManager).ToImmutableDictionary(i => i.Id, LibraryEntry.Of);
             _cache = (DateTime.UtcNow, titles);
             return titles;
         }
@@ -117,7 +126,7 @@ public sealed class LibraryTitles : IHostedService, IDisposable
             if (_cache is not { } cached)
                 return;
 
-            var titles = CropScanner.IsEligible(item) ? cached.Titles.SetItem(item.Id, TitleOf(item)) : cached.Titles.Remove(item.Id);
+            var titles = CropScanner.IsEligible(item) ? cached.Titles.SetItem(item.Id, LibraryEntry.Of(item)) : cached.Titles.Remove(item.Id);
             _cache = (cached.BuiltAt, titles);
         }
     }

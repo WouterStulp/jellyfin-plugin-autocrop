@@ -105,20 +105,24 @@ The keyframes make the analysis cheap to redo:
 The plugin adds a small script to the web client's `index.html`. It does this at request time without changing any files, and also registers with the File Transformation plugin if that is installed. The script:
 
 1. Notices when the player starts or the item changes, such as the next episode or autoplay. With direct play the item id comes from the video URL. Transcoded (HLS) playback uses a `blob:` URL, so it asks Jellyfin's sessions API what this device is playing.
-2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see.
-3. Computes the zoom. Jellyfin shows the whole frame with `object-fit: contain` at scale `k = min(cw/fw, ch/fh)`. The picture area alone would fit at `k2 = min(cw/aw, ch/ah)`. The video is scaled by `s = k2 / k` around its centre and shifted so the centre of the picture area lands in the centre of the screen. Overflow is hidden by the player container.
-4. In per-scene mode, follows `currentTime` and applies each segment's box with a short CSS transition. After a seek it jumps instantly.
-5. Recalculates on resize and fullscreen, and removes the zoom when playback stops, the item has no crop, the mode is off, or Jellyfin's aspect setting isn't Auto.
+2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see. The answer includes the item's mode: its own override, else its series', else its library's (found through Jellyfin's collection folders for the item), else the server default. Overrides are kept in the plugin configuration as `{Id, Mode}` pairs.
+3. Picks the mode. The browser keeps one on/off flag (`autocrop.enabled`): **Crop black bars** turns it on, Auto, Cover and Fill turn it off. While on, the item plays in the server's mode, unless the viewer pressed **c** for this series (or film): that choice is kept per series in `autocrop.series.{id}`. A server mode of `off` means the player does nothing until the viewer turns it on with **c** or **Crop black bars**. The old global `autocrop.mode` key is migrated once: `off` stays off, anything else becomes on.
+4. Computes the zoom. Jellyfin shows the whole frame with `object-fit: contain` at scale `k = min(cw/fw, ch/fh)`. The picture area alone would fit at `k2 = min(cw/aw, ch/ah)`. The video is scaled by `s = k2 / k` around its centre and shifted so the centre of the picture area lands in the centre of the screen. Overflow is hidden by the player container.
+5. In per-scene mode, follows `currentTime` and applies each segment's box with a short CSS transition. After a seek it jumps instantly.
+6. Recalculates on resize and fullscreen, and removes the zoom when playback stops, the item has no crop, the mode is off, or Jellyfin's aspect setting isn't Auto.
 
 ## API
 
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
-| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, default mode and transition for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
+| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, the item's mode (`defaultMode`), the series (or movie) id a viewer's mode is kept for, and the transition, for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
 | `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes, and trickplay results that no longer pass, for a scan. |
 | `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay and how many are suspicious. |
-| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`). |
+| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`), each with its mode override. `series` lists series instead. |
+| `GET /AutoCrop/Libraries` | administrator | Movie, TV and mixed libraries with their mode. |
+| `POST /AutoCrop/Modes/{id}?mode=` | administrator | Sets the mode (`per-scene`, `static`, `off`) of a library, series, movie or episode. |
+| `DELETE /AutoCrop/Modes/{id}` | administrator | Clears it, so it inherits again. |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
 
 The dashboard's titles come from one library query instead of a lookup per result. It runs in the background as soon as Jellyfin has finished starting, so the first visit after a restart is instant, and the list is kept current from the library's item added, updated and removed events. It is rebuilt every 30 minutes as a safety net.

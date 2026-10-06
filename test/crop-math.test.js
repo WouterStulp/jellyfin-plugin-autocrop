@@ -125,6 +125,54 @@ var tests = {
         assert.strictEqual(crop.enabledMode('off', 'static'), 'static');
         assert.strictEqual(crop.enabledMode('off', 'off'), 'per-scene');
         assert.strictEqual(crop.enabledMode('off', null), 'per-scene');
+    },
+
+    'the viewer turning cropping off beats everything': function () {
+        assert.strictEqual(crop.effectiveMode(false, 'static', 'per-scene'), 'off');
+        assert.strictEqual(crop.effectiveMode(false, null, 'per-scene'), 'off');
+    },
+
+    'while on, the series choice beats the server mode': function () {
+        assert.strictEqual(crop.effectiveMode(true, 'static', 'per-scene'), 'static');
+        assert.strictEqual(crop.effectiveMode(true, 'per-scene', 'off'), 'per-scene', 'the viewer turned an off series on');
+        assert.strictEqual(crop.effectiveMode(true, 'off', 'per-scene'), 'off');
+    },
+
+    'without a series choice the server mode plays, and off from the server does nothing': function () {
+        assert.strictEqual(crop.effectiveMode(true, null, 'static'), 'static');
+        assert.strictEqual(crop.effectiveMode(true, undefined, 'off'), 'off');
+        assert.strictEqual(crop.effectiveMode(true, 'zoom', undefined), 'per-scene');
+    },
+
+    'the old global mode becomes the on/off flag': function () {
+        function storage(values) {
+            return {
+                values: values,
+                getItem: function (key) {
+                    return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
+                },
+                setItem: function (key, value) {
+                    this.values[key] = String(value);
+                },
+                removeItem: function (key) {
+                    delete this.values[key];
+                }
+            };
+        }
+
+        var cases = [
+            [{ 'autocrop.mode': 'off' }, { 'autocrop.enabled': 'off' }],
+            [{ 'autocrop.mode': 'static' }, { 'autocrop.enabled': 'on' }],
+            [{ 'autocrop.mode': 'per-scene' }, { 'autocrop.enabled': 'on' }],
+            [{ 'autocrop.mode': 'off', 'autocrop.enabled': 'on' }, { 'autocrop.enabled': 'on' }],
+            [{}, {}],
+            [{ 'autocrop.enabled': 'off' }, { 'autocrop.enabled': 'off' }]
+        ];
+        cases.forEach(function (c) {
+            var s = storage(c[0]);
+            crop.migrateStorage(s);
+            assert.deepStrictEqual(s.values, c[1], JSON.stringify(c[0]));
+        });
     }
 };
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.AutoCrop.Configuration;
@@ -8,6 +9,12 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>"per-scene", "static" or "off"; viewers can override it in their own browser.</summary>
     public string DefaultMode { get; set; } = CropModes.PerScene;
+
+    /// <summary>
+    /// Modes for libraries, series, movies and episodes. An item plays with its own, else its series',
+    /// else its library's, else <see cref="DefaultMode"/>.
+    /// </summary>
+    public List<ModeOverride> ModeOverrides { get; set; } = new();
 
     public double MinimumBarPercent { get; set; } = 1.0;
 

@@ -3,12 +3,14 @@ using System.Security.Claims;
 using System.Text.Json;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.AutoCrop.Api;
+using Jellyfin.Plugin.AutoCrop.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
+using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -103,6 +105,127 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal(600, json.GetProperty("segments")[1].GetProperty("start").GetDouble());
         Assert.Equal("static", json.GetProperty("defaultMode").GetString());
         Assert.Equal(0, json.GetProperty("transitionMs").GetInt32());
+    }
+
+    private Episode ScannedEpisode(Guid seriesId, Guid libraryId)
+    {
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960));
+        var episode = new Episode { Id = movie.Id, Path = movie.Path, SeriesId = seriesId, SeriesName = "Black Clover" };
+        _library.GetItemById(episode.Id).Returns(episode);
+        _library.GetItemById<BaseItem>(episode.Id, _alice).Returns(episode);
+        _library.GetCollectionFolders(episode).Returns(new List<Folder> { new CollectionFolder { Id = libraryId } });
+        return episode;
+    }
+
+    [Fact]
+    public void GetItem_DefaultMode_IsTheItemsThenSeriesThenLibraryThenServerMode()
+    {
+        var series = Guid.NewGuid();
+        var library = Guid.NewGuid();
+        var episode = ScannedEpisode(series, library);
+        var config = Plugin.Instance!.Configuration;
+        string Mode() => Json(Controller(_alice.Id).GetItem(episode.Id)).GetProperty("defaultMode").GetString()!;
+
+        config.DefaultMode = "static";
+        Assert.Equal("static", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = library, Mode = "off" });
+        Assert.Equal("off", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = series, Mode = "per-scene" });
+        Assert.Equal("per-scene", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = episode.Id, Mode = "static" });
+        Assert.Equal("static", Mode());
+    }
+
+    [Fact]
+    public void GetItem_RemembersViewerModesPerSeries_OrPerMovie()
+    {
+        var series = Guid.NewGuid();
+        var episode = ScannedEpisode(series, Guid.NewGuid());
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960));
+
+        Assert.Equal(series.ToString("N"), Json(Controller(_alice.Id).GetItem(episode.Id)).GetProperty("seriesId").GetString());
+        Assert.Equal(movie.Id.ToString("N"), Json(Controller(_alice.Id).GetItem(movie.Id)).GetProperty("seriesId").GetString());
+    }
+
+    [Fact]
+    public void SetMode_StoresAndReplacesTheOverride_ClearModeRemovesIt()
+    {
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960));
+        var controller = Controller(_alice.Id);
+
+        Assert.IsType<NoContentResult>(controller.SetMode(movie.Id, "off"));
+        Assert.IsType<NoContentResult>(controller.SetMode(movie.Id, "static"));
+        var stored = Assert.Single(Plugin.Instance!.Configuration.ModeOverrides);
+        Assert.Equal((movie.Id, "static"), (stored.Id, stored.Mode));
+        Assert.Equal("static", Json(controller.GetResults()).GetProperty("items")[0].GetProperty("mode").GetString());
+
+        Assert.IsType<NoContentResult>(controller.ClearMode(movie.Id));
+        Assert.Empty(Plugin.Instance.Configuration.ModeOverrides);
+    }
+
+    [Fact]
+    public void SetMode_AcceptsLibrariesAndSeries_RejectsUnknownItemsAndModes()
+    {
+        var library = new CollectionFolder { Id = Guid.NewGuid() };
+        var series = new Series { Id = Guid.NewGuid() };
+        _library.GetItemById(library.Id).Returns(library);
+        _library.GetItemById(series.Id).Returns(series);
+        var controller = Controller(_alice.Id);
+
+        Assert.IsType<NoContentResult>(controller.SetMode(library.Id, "off"));
+        Assert.IsType<NoContentResult>(controller.SetMode(series.Id, "static"));
+        Assert.IsType<NotFoundResult>(controller.SetMode(Guid.NewGuid(), "off"));
+        Assert.IsType<BadRequestResult>(controller.SetMode(series.Id, "inherit"));
+        Assert.IsType<BadRequestResult>(controller.SetMode(series.Id, null));
+        Assert.Equal(2, Plugin.Instance!.Configuration.ModeOverrides.Count);
+    }
+
+    [Fact]
+    public void Libraries_AreTheMovieTvAndMixedOnes_WithTheirMode()
+    {
+        var films = Guid.NewGuid();
+        var shows = Guid.NewGuid();
+        var mixed = Guid.NewGuid();
+        _library.GetVirtualFolders().Returns(new List<VirtualFolderInfo>
+        {
+            new() { Name = "Films", ItemId = films.ToString(), CollectionType = CollectionTypeOptions.movies },
+            new() { Name = "Anime", ItemId = shows.ToString(), CollectionType = CollectionTypeOptions.tvshows },
+            new() { Name = "Mixed", ItemId = mixed.ToString(), CollectionType = null },
+            new() { Name = "Music", ItemId = Guid.NewGuid().ToString(), CollectionType = CollectionTypeOptions.music },
+        });
+        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = shows, Mode = "static" });
+
+        var libraries = Json(Controller(_alice.Id).GetLibraries()).EnumerateArray().ToList();
+
+        Assert.Equal(new[] { "Films", "Anime", "Mixed" }, libraries.Select(l => l.GetProperty("name").GetString()));
+        Assert.Equal(shows.ToString("N"), libraries[1].GetProperty("id").GetString());
+        Assert.Equal("static", libraries[1].GetProperty("mode").GetString());
+        Assert.Equal(JsonValueKind.Null, libraries[0].GetProperty("mode").ValueKind);
+    }
+
+    [Fact]
+    public void Results_SeriesFilter_ListsSeriesWithTheirEpisodesAndMode()
+    {
+        var clover = Guid.NewGuid();
+        var episodes = Enumerable.Range(1, 3).Select(i => new Episode
+        {
+            Id = Guid.NewGuid(), Path = $"/media/clover/{i}.mkv", SeriesId = clover, SeriesName = "Black Clover", ParentIndexNumber = 1, IndexNumber = i,
+        }).ToList();
+        var film = new Movie { Id = Guid.NewGuid(), Name = "Dune", Path = "/media/dune.mkv" };
+        foreach (var item in episodes.Cast<BaseItem>().Append(film))
+            _store.Set(new CropResult { ItemId = item.Id, Path = item.Path, FrameWidth = 1920, FrameHeight = 1080, Crop = item == episodes[0] ? new CropBox(0, 60, 1920, 960) : CropBox.Full(1920, 1080) });
+        _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns(episodes.Cast<BaseItem>().Append(film).ToList());
+        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = clover, Mode = "static" });
+
+        var page = Json(Controller(_alice.Id).GetResults(filter: "series", search: "clover"));
+
+        var row = Assert.Single(page.GetProperty("items").EnumerateArray());
+        Assert.Equal(clover.ToString("N"), row.GetProperty("itemId").GetString());
+        Assert.Equal("Black Clover", row.GetProperty("title").GetString());
+        Assert.Equal("series", row.GetProperty("kind").GetString());
+        Assert.Equal(3, row.GetProperty("episodes").GetInt32());
+        Assert.Equal(1, row.GetProperty("withBars").GetInt32());
+        Assert.Equal("static", row.GetProperty("mode").GetString());
     }
 
     [Fact]
@@ -295,6 +418,9 @@ public class AutoCropControllerTests : IDisposable
     [InlineData(nameof(AutoCropController.Reanalyse), "RequiresElevation")]
     [InlineData(nameof(AutoCropController.GetStats), "RequiresElevation")]
     [InlineData(nameof(AutoCropController.GetResults), "RequiresElevation")]
+    [InlineData(nameof(AutoCropController.GetLibraries), "RequiresElevation")]
+    [InlineData(nameof(AutoCropController.SetMode), "RequiresElevation")]
+    [InlineData(nameof(AutoCropController.ClearMode), "RequiresElevation")]
     public void Endpoints_RequireTheRightAuthorization(string action, string? policy)
     {
         var method = typeof(AutoCropController).GetMethod(action)!;

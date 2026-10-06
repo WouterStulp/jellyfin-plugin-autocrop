@@ -4,7 +4,9 @@
 
     var MODES = ['per-scene', 'static', 'off'];
     var MODE_LABELS = { 'per-scene': 'per scene', 'static': 'whole film', 'off': 'off' };
-    var STORAGE_KEY = 'autocrop.mode';
+    var ENABLED_KEY = 'autocrop.enabled';
+    var LEGACY_MODE_KEY = 'autocrop.mode';
+    var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
     var MENU_LABEL = 'Crop black bars';
     var VIDEO_ID = /\/videos\/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
@@ -89,6 +91,35 @@
         return true;
     }
 
+    /**
+     * The mode that plays: off when the viewer turned cropping off (Auto, Cover or Fill), else their own
+     * choice for this series or movie (the c key), else the server's mode for the item.
+     */
+    function effectiveMode(enabled, seriesMode, serverMode) {
+        if (!enabled) {
+            return 'off';
+        }
+        if (MODES.indexOf(seriesMode) >= 0) {
+            return seriesMode;
+        }
+        return MODES.indexOf(serverMode) >= 0 ? serverMode : 'per-scene';
+    }
+
+    /**
+     * Older versions kept one global mode in the browser. It becomes the on/off flag: a stored "off"
+     * stays off, any other mode means on, which now plays the server's mode for each item.
+     */
+    function migrateStorage(storage) {
+        var legacy = storage.getItem(LEGACY_MODE_KEY);
+        if (legacy === null) {
+            return;
+        }
+        if (storage.getItem(ENABLED_KEY) === null) {
+            storage.setItem(ENABLED_KEY, legacy === 'off' ? 'off' : 'on');
+        }
+        storage.removeItem(LEGACY_MODE_KEY);
+    }
+
     /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else per scene. */
     function enabledMode(mode, defaultMode) {
         if (mode && mode !== 'off') {
@@ -110,7 +141,9 @@
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
-            enabledMode: enabledMode
+            enabledMode: enabledMode,
+            effectiveMode: effectiveMode,
+            migrateStorage: migrateStorage
         };
         return;
     }
@@ -123,27 +156,43 @@
         loading: false,
         lastSessionCheck: 0,
         autoAspect: true,
-        mode: null,
+        enabled: true,
+        seriesModes: {},
         seeking: false,
         css: '',
         range: null,
         choosingCrop: false
     };
 
-    function viewerMode() {
+    // Storage can be blocked; then the choices made on this page (state) last until it reloads.
+    function stored(key) {
         try {
-            var stored = window.localStorage.getItem(STORAGE_KEY);
-            if (MODES.indexOf(stored) >= 0) {
-                return stored;
-            }
+            return window.localStorage.getItem(key);
         } catch (e) {
-            // Storage blocked: fall back to the choice made on this page.
+            return null;
         }
-        return state.mode;
+    }
+
+    function store(key, value) {
+        try {
+            window.localStorage.setItem(key, value);
+        } catch (e) {
+            // Storage blocked: the state keeps the choice.
+        }
+    }
+
+    function viewerEnabled() {
+        var flag = stored(ENABLED_KEY);
+        return flag === 'on' || flag === 'off' ? flag === 'on' : state.enabled;
+    }
+
+    function seriesMode() {
+        var id = state.data && state.data.seriesId;
+        return id ? stored(SERIES_KEY + id) || state.seriesModes[id] : null;
     }
 
     function currentMode() {
-        return viewerMode() || (state.data && state.data.defaultMode) || 'per-scene';
+        return effectiveMode(viewerEnabled(), seriesMode(), state.data && state.data.defaultMode);
     }
 
     function load(itemId, source) {
@@ -408,15 +457,23 @@
         }, 1500);
     }
 
-    // The viewer's choice, for this browser: the c key and the aspect-ratio menu both set it.
-    function setMode(mode) {
-        state.mode = mode;
-        try {
-            window.localStorage.setItem(STORAGE_KEY, mode);
-        } catch (err) {
-            // Storage blocked: state.mode keeps the choice until the page reloads.
+    // The aspect-ratio menu turns cropping on or off in this browser, for everything.
+    function setEnabled(on) {
+        state.enabled = on;
+        store(ENABLED_KEY, on ? 'on' : 'off');
+    }
+
+    // The c key picks the mode for this series (or movie) only, so a preference for one show sticks.
+    function setSeriesMode(mode) {
+        var id = state.data && state.data.seriesId;
+        if (id) {
+            state.seriesModes[id] = mode;
+            store(SERIES_KEY + id, mode);
         }
-        toast('Auto-crop: ' + MODE_LABELS[mode]);
+    }
+
+    function showMode() {
+        toast('Auto-crop: ' + MODE_LABELS[currentMode()]);
         update();
     }
 
@@ -426,8 +483,17 @@
         if (!state.video || editing || e.ctrlKey || e.altKey || e.metaKey || (e.key !== 'c' && e.key !== 'C')) {
             return;
         }
+        if (!state.data) {
+            toast('Auto-crop: no black bars to crop');
+            return;
+        }
 
-        setMode(nextMode(currentMode()));
+        var mode = nextMode(currentMode());
+        setSeriesMode(mode);
+        if (mode !== 'off') {
+            setEnabled(true);
+        }
+        showMode();
     }
 
     function menuElement(tag, className) {
@@ -483,7 +549,8 @@
         for (var j = 0; j < items.length; j++) {
             items[j].addEventListener('click', function () {
                 if (!state.choosingCrop && currentMode() !== 'off') {
-                    setMode('off');
+                    setEnabled(false);
+                    showMode();
                 }
             });
         }
@@ -491,11 +558,14 @@
         item.addEventListener('click', function (e) {
             // Jellyfin's own click handler would store "autocrop" as the aspect ratio.
             e.stopPropagation();
-            var mode = enabledMode(currentMode(), state.data && state.data.defaultMode);
             state.choosingCrop = true;
             auto.click();
             state.choosingCrop = false;
-            setMode(mode);
+            setEnabled(true);
+            if (currentMode() === 'off' && state.data) {
+                setSeriesMode(enabledMode('off', state.data.defaultMode));
+            }
+            showMode();
         });
 
         last.parentNode.insertBefore(item, last.nextSibling);
@@ -516,6 +586,11 @@
         }
     }
 
+    try {
+        migrateStorage(window.localStorage);
+    } catch (e) {
+        // Storage blocked: nothing stored to migrate.
+    }
     document.addEventListener('keydown', onKeyDown, true);
     if (window.MutationObserver && document.body) {
         new window.MutationObserver(onDialogs).observe(document.body, { childList: true });

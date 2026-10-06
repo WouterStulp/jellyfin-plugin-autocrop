@@ -50,7 +50,7 @@ public class LibraryTitlesTests : IAsyncLifetime
             await Task.Delay(100);
 
         _library.Received(1).GetItemList(Arg.Any<InternalItemsQuery>());
-        Assert.Equal("Dune", _titles.Get()[_dune.Id]);
+        Assert.Equal("Dune", _titles.Get()[_dune.Id].Title);
         _library.Received(1).GetItemList(Arg.Any<InternalItemsQuery>());
     }
 
@@ -58,11 +58,11 @@ public class LibraryTitlesTests : IAsyncLifetime
     public void AddedEpisode_IsListedWithoutAnotherQuery()
     {
         _titles.Get();
-        var episode = new Episode { Id = Guid.NewGuid(), Path = "/media/show/s01e02.mkv", SeriesName = "Severance", ParentIndexNumber = 1, IndexNumber = 2 };
+        var episode = new Episode { Id = Guid.NewGuid(), SeriesId = Guid.NewGuid(), Path = "/media/show/s01e02.mkv", SeriesName = "Severance", ParentIndexNumber = 1, IndexNumber = 2 };
 
         Fire("added", episode);
 
-        Assert.Equal("Severance · S01E02", _titles.Get()[episode.Id]);
+        Assert.Equal(new LibraryEntry("Severance · S01E02", episode.SeriesId, "Severance"), _titles.Get()[episode.Id]);
         _library.Received(1).GetItemList(Arg.Any<InternalItemsQuery>());
     }
 
@@ -74,8 +74,8 @@ public class LibraryTitlesTests : IAsyncLifetime
 
         Fire("updated", _dune);
 
-        Assert.Equal("Dune: Part One", _titles.Get()[_dune.Id]);
-        Assert.Equal("Dune", before[_dune.Id]);
+        Assert.Equal("Dune: Part One", _titles.Get()[_dune.Id].Title);
+        Assert.Equal("Dune", before[_dune.Id].Title);
     }
 
     [Theory]
