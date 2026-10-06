@@ -4,6 +4,10 @@ Removes black bars that are burned into the video itself, so the picture fills y
 
 Some files store their black bars inside the video: a widescreen film saved as a 16:9 frame with black rows above and below. On a 16:9 TV you won't notice, but on an **ultrawide (21:9) monitor** you get black bars on every side. Jellyfin's own Zoom and Stretch options can't fix that, because they don't know where the picture is. AutoCrop measures every file once and zooms the player so only the real picture fills the screen.
 
+| Without AutoCrop | With AutoCrop |
+| --- | --- |
+| ![A widescreen film with black bars on all four sides on an ultrawide screen](docs/images/before.jpg) | ![The same film filling the ultrawide screen](docs/images/after.jpg) |
+
 ## Features
 
 - **Exact.** Every file is measured, so nothing is guessed and no picture is ever cut off.
@@ -27,6 +31,8 @@ The first scan of your library runs in the background. Most files are done in a 
 
 While watching in the browser, open the **⚙ settings → Aspect Ratio** and choose **Crop black bars**. Choose **Auto**, **Zoom** or **Stretch** to turn it off again. This is remembered in that browser, for everything you watch.
 
+<img src="docs/images/menu.png" alt="The Aspect Ratio menu with Crop black bars selected" width="263">
+
 While it's on, each film or episode plays in the mode the server sets for it (normally per scene). Press **C** during playback to switch between:
 
 | Mode | What you see |
@@ -37,9 +43,15 @@ While it's on, each film or episode plays in the mode the server sets for it (no
 
 This choice is remembered in that browser for the whole series (or that film).
 
+In per-scene mode the crop follows the film. Here a 2.39:1 scene switches to a taller IMAX scene, and AutoCrop zooms out so the whole picture stays visible:
+
+![Per-scene cropping following a switch from 2.39:1 to IMAX](docs/images/per-scene.gif)
+
 ## Dashboard and settings
 
 Go to **Dashboard → Plugins → AutoCrop**.
+
+![The AutoCrop dashboard listing every measured file](docs/images/dashboard.png)
 
 - **Overview:** every measured file with its picture size and shape. Search, filters, **Rescan** per file, and **Scan library now**.
 - **Settings:**
@@ -52,6 +64,12 @@ Go to **Dashboard → Plugins → AutoCrop**.
   - use trickplay images to speed up scanning (on)
 
   After changing a setting, **Re-analyse all** applies it to everything in seconds.
+
+<details><summary>Settings page</summary>
+
+![The AutoCrop settings page](docs/images/settings.png)
+
+</details>
 - **Mode per series, film or episode:** the **Mode** column in the overview, and the **Series** filter to set a whole series at once. Useful for anime that use black bars as an effect in fight scenes (Black Clover, Jujutsu Kaisen): set them to **Static** so the picture doesn't zoom in during those scenes.
 
   A file uses its own mode, else its series', else its library's, else the default mode.
