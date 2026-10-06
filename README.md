@@ -24,6 +24,13 @@ Some files carry their letterbox inside the frame: a 2:1 film stored as 1920×10
 
 The server default is set on the plugin's settings page. Each viewer can override it in their own browser: press **c** during playback to cycle per scene → static → off. A short message shows the new mode, and the choice is remembered in that browser.
 
+The player's own **Aspect ratio** menu (the gear icon) gets a fourth option, **Crop black bars**, below Auto, Cover and Fill:
+
+- Choosing it sets Jellyfin's aspect ratio to Auto and turns AutoCrop on in this browser, in the mode you last used, or the server default. It shows the check mark while AutoCrop is on.
+- Choosing Auto, Cover or Fill turns AutoCrop off in this browser.
+- The menu and the **c** key share the same setting, so they always agree.
+- The menu is recognised by its option values (`auto`, `cover`, `fill`), not by its translated text. If a Jellyfin version builds it differently, the option simply doesn't appear; the **c** key still works.
+
 AutoCrop only acts when Jellyfin's own aspect ratio setting is **Auto**. Choose Cover or Fill in the player and AutoCrop stays out of the way.
 
 ## Limitations

@@ -5,6 +5,8 @@
     var MODES = ['per-scene', 'static', 'off'];
     var MODE_LABELS = { 'per-scene': 'per scene', 'static': 'whole film', 'off': 'off' };
     var STORAGE_KEY = 'autocrop.mode';
+    var ASPECT_IDS = ['auto', 'cover', 'fill'];
+    var MENU_LABEL = 'Crop black bars';
     var VIDEO_ID = /\/videos\/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
     /**
@@ -71,6 +73,30 @@
         return MODES[(MODES.indexOf(mode) + 1) % MODES.length];
     }
 
+    /**
+     * Whether an action sheet's option ids (data-id) are Jellyfin's aspect-ratio choices: exactly
+     * auto, cover and fill, in any order. The ids don't depend on the interface language.
+     */
+    function isAspectSheet(ids) {
+        if (!ids || ids.length !== ASPECT_IDS.length) {
+            return false;
+        }
+        for (var i = 0; i < ASPECT_IDS.length; i++) {
+            if (ids.indexOf(ASPECT_IDS[i]) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else per scene. */
+    function enabledMode(mode, defaultMode) {
+        if (mode && mode !== 'off') {
+            return mode;
+        }
+        return defaultMode && defaultMode !== 'off' ? defaultMode : 'per-scene';
+    }
+
     function transformCss(transform) {
         return transform
             ? 'translate(' + transform.x.toFixed(2) + 'px, ' + transform.y.toFixed(2) + 'px) scale(' + transform.scale.toFixed(4) + ')'
@@ -78,7 +104,14 @@
     }
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { computeTransform: computeTransform, segmentAt: segmentAt, nextMode: nextMode, transformCss: transformCss };
+        module.exports = {
+            computeTransform: computeTransform,
+            segmentAt: segmentAt,
+            nextMode: nextMode,
+            transformCss: transformCss,
+            isAspectSheet: isAspectSheet,
+            enabledMode: enabledMode
+        };
         return;
     }
 
@@ -93,7 +126,8 @@
         mode: null,
         seeking: false,
         css: '',
-        range: null
+        range: null,
+        choosingCrop: false
     };
 
     function viewerMode() {
@@ -374,14 +408,8 @@
         }, 1500);
     }
 
-    function onKeyDown(e) {
-        var target = e.target || {};
-        var editing = target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName || '');
-        if (!state.video || editing || e.ctrlKey || e.altKey || e.metaKey || (e.key !== 'c' && e.key !== 'C')) {
-            return;
-        }
-
-        var mode = nextMode(currentMode());
+    // The viewer's choice, for this browser: the c key and the aspect-ratio menu both set it.
+    function setMode(mode) {
         state.mode = mode;
         try {
             window.localStorage.setItem(STORAGE_KEY, mode);
@@ -392,7 +420,106 @@
         update();
     }
 
+    function onKeyDown(e) {
+        var target = e.target || {};
+        var editing = target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName || '');
+        if (!state.video || editing || e.ctrlKey || e.altKey || e.metaKey || (e.key !== 'c' && e.key !== 'C')) {
+            return;
+        }
+
+        setMode(nextMode(currentMode()));
+    }
+
+    function menuElement(tag, className) {
+        var el = document.createElement(tag);
+        el.className = className;
+        return el;
+    }
+
+    /**
+     * Adds "Crop black bars" to Jellyfin's aspect-ratio sheet (Auto, Cover, Fill, recognised by their
+     * data-id). Choosing it clicks Jellyfin's own Auto, so the aspect setting becomes Auto and the
+     * sheet closes as usual, then turns AutoCrop on. Auto, Cover and Fill turn it off. Any other sheet,
+     * or one that looks different, is left alone.
+     */
+    function extendAspectSheet(sheet) {
+        var items = sheet.querySelectorAll('.actionSheetMenuItem[data-id]');
+        var ids = [];
+        for (var i = 0; i < items.length; i++) {
+            ids.push(items[i].getAttribute('data-id'));
+        }
+        if (!state.video || sheet.autocropExtended || !isAspectSheet(ids)) {
+            return;
+        }
+        sheet.autocropExtended = true;
+
+        var auto = items[ids.indexOf('auto')];
+        var last = items[items.length - 1];
+        var active = window.getComputedStyle(state.video).objectFit === 'contain' && currentMode() !== 'off';
+
+        var item = menuElement('button', last.className);
+        item.type = 'button';
+        item.setAttribute('data-id', 'autocrop');
+
+        // Jellyfin marks the selected option with a check icon and keeps a hidden one on the others.
+        var nativeIcon = last.querySelector('.actionsheetMenuItemIcon');
+        if (nativeIcon) {
+            var icon = menuElement('span', 'actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons check');
+            icon.setAttribute('aria-hidden', 'true');
+            icon.style.visibility = active ? '' : 'hidden';
+            item.appendChild(icon);
+            var autoIcon = auto.querySelector('.actionsheetMenuItemIcon');
+            if (active && autoIcon) {
+                autoIcon.style.visibility = 'hidden';
+            }
+        }
+
+        var body = menuElement('div', 'listItemBody actionsheetListItemBody');
+        var text = menuElement('div', 'listItemBodyText actionSheetItemText');
+        text.textContent = MENU_LABEL;
+        body.appendChild(text);
+        item.appendChild(body);
+
+        for (var j = 0; j < items.length; j++) {
+            items[j].addEventListener('click', function () {
+                if (!state.choosingCrop && currentMode() !== 'off') {
+                    setMode('off');
+                }
+            });
+        }
+
+        item.addEventListener('click', function (e) {
+            // Jellyfin's own click handler would store "autocrop" as the aspect ratio.
+            e.stopPropagation();
+            var mode = enabledMode(currentMode(), state.data && state.data.defaultMode);
+            state.choosingCrop = true;
+            auto.click();
+            state.choosingCrop = false;
+            setMode(mode);
+        });
+
+        last.parentNode.insertBefore(item, last.nextSibling);
+    }
+
+    // Jellyfin appends every dialog, the player's action sheets included, to the body.
+    function onDialogs(mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+            var added = mutations[i].addedNodes;
+            for (var j = 0; j < added.length; j++) {
+                var node = added[j];
+                var sheet = node.nodeType === 1
+                    && (node.classList.contains('actionSheet') ? node : node.querySelector('.actionSheet'));
+                if (sheet) {
+                    extendAspectSheet(sheet);
+                }
+            }
+        }
+    }
+
     document.addEventListener('keydown', onKeyDown, true);
+    if (window.MutationObserver && document.body) {
+        new window.MutationObserver(onDialogs).observe(document.body, { childList: true });
+    }
     setInterval(tick, 1000);
     window.requestAnimationFrame(frame);
 })();
