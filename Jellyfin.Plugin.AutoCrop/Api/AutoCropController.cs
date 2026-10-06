@@ -1,13 +1,13 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Mime;
+using Jellyfin.Plugin.AutoCrop.Configuration;
 using MediaBrowser.Controller.Entities;
-using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -22,25 +22,31 @@ public class AutoCropController : ControllerBase
     // Jellyfin's administrator policy (Jellyfin.Api.Constants.Policies.RequiresElevation).
     internal const string AdminPolicy = "RequiresElevation";
 
+    private static readonly object OverridesGate = new();
+
     private readonly ILibraryManager _libraryManager;
     private readonly IUserManager _userManager;
     private readonly CropStore _store;
     private readonly CropScanner _scanner;
     private readonly ScanQueue _queue;
+    private readonly LibraryTitles _titles;
 
     public AutoCropController(
-        ILibraryManager libraryManager, IUserManager userManager, CropStore store, CropScanner scanner, ScanQueue queue)
+        ILibraryManager libraryManager, IUserManager userManager, CropStore store, CropScanner scanner, ScanQueue queue, LibraryTitles titles)
     {
         _libraryManager = libraryManager;
         _userManager = userManager;
         _store = store;
         _scanner = scanner;
         _queue = queue;
+        _titles = titles;
     }
 
     /// <summary>
-    /// The crop for an item the caller can see, for the web player. 404 when there is no result, the
-    /// file changed since the scan, no crop is needed, or the item isn't visible to the caller.
+    /// The crop for an item the caller can see, for the web player, with the mode it plays with (its
+    /// own, its series', its library's or the server default) and the series (or the movie itself) a
+    /// viewer's own mode is remembered for. 404 when there is no result, the file changed since the
+    /// scan, no crop is needed, or the item isn't visible to the caller.
     /// </summary>
     [HttpGet("Items/{itemId}")]
     [Authorize]
@@ -71,8 +77,10 @@ public class AutoCropController : ControllerBase
             frameHeight = result.FrameHeight,
             crop = result.Crop,
             segments = result.Segments,
-            defaultMode = CropModes.Normalize(config?.DefaultMode),
+            defaultMode = CropModes.Effective(config?.ModeOverrides ?? new List<ModeOverride>(), config?.DefaultMode, Scopes(item!)),
+            seriesId = (item is Episode { SeriesId: var series } && series != Guid.Empty ? series : item!.Id).ToString("N"),
             transitionMs = config?.TransitionMs ?? 300,
+            zoomStyledSubtitles = config?.ZoomStyledSubtitles ?? true,
         });
     }
 
@@ -89,6 +97,50 @@ public class AutoCropController : ControllerBase
         _store.Remove(itemId);
         _queue.Enqueue(itemId, settle: false);
         return Accepted();
+    }
+
+    /// <summary>The movie, TV and mixed libraries with their mode (null: the server default), for the settings.</summary>
+    [HttpGet("Libraries")]
+    [Authorize(Policy = AdminPolicy)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult GetLibraries()
+        => Ok(_libraryManager.GetVirtualFolders()
+            .Where(f => f.CollectionType is null or CollectionTypeOptions.movies or CollectionTypeOptions.tvshows or CollectionTypeOptions.mixed)
+            .Select(f => (Folder: f, Id: Guid.TryParse(f.ItemId, out var id) ? id : Guid.Empty))
+            .Where(x => x.Id != Guid.Empty)
+            .Select(x => new { id = x.Id.ToString("N"), name = x.Folder.Name, mode = ModeOf(x.Id) }));
+
+    /// <summary>Sets the mode of a library, series, movie or episode.</summary>
+    [HttpPost("Modes/{id}")]
+    [Authorize(Policy = AdminPolicy)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult SetMode([FromRoute] Guid id, [FromQuery] string? mode)
+    {
+        if (!CropModes.IsValid(mode))
+            return BadRequest();
+
+        var item = _libraryManager.GetItemById(id);
+        if (item is not (CollectionFolder or Series) && !(item != null && CropScanner.IsEligible(item)))
+            return NotFound();
+
+        UpdateOverrides(overrides =>
+        {
+            overrides.RemoveAll(o => o.Id == id);
+            overrides.Add(new ModeOverride { Id = id, Mode = mode! });
+        });
+        return NoContent();
+    }
+
+    /// <summary>Clears the mode of a library, series, movie or episode, so it inherits again.</summary>
+    [HttpDelete("Modes/{id}")]
+    [Authorize(Policy = AdminPolicy)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public ActionResult ClearMode([FromRoute] Guid id)
+    {
+        UpdateOverrides(overrides => overrides.RemoveAll(o => o.Id == id));
+        return NoContent();
     }
 
     /// <summary>
@@ -116,7 +168,7 @@ public class AutoCropController : ControllerBase
         var results = _store.All();
         var scanned = results.Where(r => !r.Failed).ToList();
         var known = results.Select(r => r.ItemId).ToHashSet();
-        var pending = LibraryTitles.Get(_libraryManager).Keys.Count(id => !known.Contains(id));
+        var pending = _titles.Get().Keys.Count(id => !known.Contains(id));
 
         return Ok(new
         {
@@ -131,7 +183,10 @@ public class AutoCropController : ControllerBase
         });
     }
 
-    /// <summary>Scan results for the dashboard table, newest first, filtered, searched and paged.</summary>
+    /// <summary>
+    /// Scan results for the dashboard table, newest first, filtered, searched and paged. The "series"
+    /// filter lists series instead, by name, with their scanned episodes and mode.
+    /// </summary>
     [HttpGet("Results")]
     [Authorize(Policy = AdminPolicy)]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -142,8 +197,11 @@ public class AutoCropController : ControllerBase
         [FromQuery] int limit = 25)
     {
         limit = Math.Clamp(limit, 1, 200);
-        var titles = LibraryTitles.Get(_libraryManager);
-        string TitleOf(CropResult r) => titles.TryGetValue(r.ItemId, out var title) ? title : Title(r);
+        var titles = _titles.Get();
+        if (filter == "series")
+            return Ok(SeriesPage(titles, search, startIndex, limit));
+
+        string TitleOf(CropResult r) => titles.TryGetValue(r.ItemId, out var entry) ? entry.Title : Title(r);
 
         var rows = _store.All()
             .Where(r => MatchesFilter(r, filter))
@@ -168,6 +226,7 @@ public class AutoCropController : ControllerBase
                 segments = x.Result.Segments,
                 scannedAt = x.Result.ScannedAtUtc,
                 source = x.Result.Failed ? null : x.Result.AnalysisSource ?? AnalysisSources.Keyframes,
+                mode = ModeOf(x.Result.ItemId),
             }),
         });
     }
@@ -204,51 +263,64 @@ public class AutoCropController : ControllerBase
         _ => true,
     };
 
-    // Only for results whose item isn't in the cached library list, e.g. one that was just removed.
-    private string Title(CropResult result)
-        => _libraryManager.GetItemById(result.ItemId) is { } item ? LibraryTitles.TitleOf(item) : Path.GetFileNameWithoutExtension(result.Path);
-}
+    private static string? ModeOf(Guid id)
+        => Plugin.Instance?.Configuration.ModeOverrides.FirstOrDefault(o => o.Id == id)?.Mode;
 
-/// <summary>
-/// Dashboard titles for every eligible video, from one library query instead of a lookup per result,
-/// kept for a minute so paging, filtering and the stats tile don't each query the whole library.
-/// </summary>
-internal static class LibraryTitles
-{
-    private static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(1);
-    private static readonly object Gate = new();
-    private static (DateTime BuiltAt, IReadOnlyDictionary<Guid, string> Titles)? _cache;
-
-    internal static IReadOnlyDictionary<Guid, string> Get(ILibraryManager libraryManager)
+    // A new list each time, so a playback request reading the old one never sees it change halfway.
+    private static void UpdateOverrides(Action<List<ModeOverride>> change)
     {
-        lock (Gate)
-        {
-            if (_cache is { } cached && DateTime.UtcNow - cached.BuiltAt < MaxAge)
-                return cached.Titles;
+        var plugin = Plugin.Instance;
+        if (plugin == null)
+            return;
 
-            var titles = DetectBlackBarsTask.LibraryVideos(libraryManager).ToDictionary(i => i.Id, TitleOf);
-            _cache = (DateTime.UtcNow, titles);
-            return titles;
+        lock (OverridesGate)
+        {
+            var overrides = plugin.Configuration.ModeOverrides.ToList();
+            change(overrides);
+            plugin.Configuration.ModeOverrides = overrides;
+            plugin.SaveConfiguration();
         }
     }
 
-    internal static void ResetForTesting()
+    private object SeriesPage(IReadOnlyDictionary<Guid, LibraryEntry> titles, string? search, int startIndex, int limit)
     {
-        lock (Gate)
-            _cache = null;
+        var series = _store.All()
+            .Where(r => !r.Failed)
+            .Select(r => (Result: r, Entry: titles.GetValueOrDefault(r.ItemId)))
+            .Where(x => x.Entry is { SeriesId: not null })
+            .GroupBy(x => x.Entry!.SeriesId!.Value)
+            .Select(g => (Id: g.Key, Title: g.First().Entry!.SeriesName ?? string.Empty, Episodes: g.Count(), WithBars: g.Count(x => x.Result.HasCrop)))
+            .Where(s => string.IsNullOrWhiteSpace(search) || s.Title.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(s => s.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new
+        {
+            total = series.Count,
+            items = series.Skip(Math.Max(0, startIndex)).Take(limit).Select(s => new
+            {
+                itemId = s.Id.ToString("N"),
+                title = s.Title,
+                kind = "series",
+                episodes = s.Episodes,
+                withBars = s.WithBars,
+                mode = ModeOf(s.Id),
+            }),
+        };
     }
 
-    internal static string TitleOf(BaseItem item)
-        => item switch
-        {
-            Episode episode => string.Format(
-                CultureInfo.InvariantCulture,
-                "{0} · S{1:00}E{2:00}",
-                episode.SeriesName,
-                episode.ParentIndexNumber ?? 0,
-                episode.IndexNumber ?? 0),
-            Movie { ProductionYear: { } year } movie when !movie.Name.EndsWith($"({year})", StringComparison.Ordinal)
-                => $"{movie.Name} ({year})",
-            _ => item.Name,
-        };
+    // An item's own id, its series and its libraries, looked up only as far as needed.
+    private IEnumerable<Guid> Scopes(BaseItem item)
+    {
+        yield return item.Id;
+        if (item is Episode { SeriesId: var series } && series != Guid.Empty)
+            yield return series;
+
+        foreach (var library in _libraryManager.GetCollectionFolders(item))
+            yield return library.Id;
+    }
+
+    // Only for results whose item isn't in the cached library list, e.g. one that was just removed.
+    private string Title(CropResult result)
+        => _libraryManager.GetItemById(result.ItemId) is { } item ? LibraryTitles.TitleOf(item) : Path.GetFileNameWithoutExtension(result.Path);
 }

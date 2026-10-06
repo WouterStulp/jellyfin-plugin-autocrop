@@ -4,9 +4,17 @@
 
     var MODES = ['per-scene', 'static', 'off'];
     var MODE_LABELS = { 'per-scene': 'per scene', 'static': 'whole film', 'off': 'off' };
-    var STORAGE_KEY = 'autocrop.mode';
+    var ENABLED_KEY = 'autocrop.enabled';
+    var LEGACY_MODE_KEY = 'autocrop.mode';
+    var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
     var MENU_LABEL = 'Crop black bars';
+    // The canvas JavascriptSubtitlesOctopus (@jellyfin/libass-wasm) draws ASS/SSA on, in jellyfin-web
+    // 10.11 and 12. PGS and VobSub (libpgs, libbitsub) draw on canvases without a class.
+    var ASS_CANVAS_CLASS = 'libassjs-canvas';
+    var VIDEO_EVENTS = ['timeupdate', 'loadedmetadata', 'play', 'playing', 'pause', 'ratechange'];
+    // Lands just past a boundary rather than just before it, where nothing would change yet.
+    var BOUNDARY_MARGIN_MS = 15;
     var VIDEO_ID = /\/videos\/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
     /**
@@ -69,6 +77,21 @@
         return low;
     }
 
+    /**
+     * Milliseconds of wall-clock time until playback at rate reaches the start of the segment after
+     * time (seconds), plus a small margin; null when there is none ahead or playback doesn't advance.
+     */
+    function nextBoundaryDelay(segments, time, rate) {
+        if (!segments || segments.length < 2 || !(rate > 0)) {
+            return null;
+        }
+        var next = segmentAt(segments, time) + 1;
+        if (next >= segments.length) {
+            return null;
+        }
+        return Math.max(0, (segments[next].start - time) * 1000 / rate) + BOUNDARY_MARGIN_MS;
+    }
+
     function nextMode(mode) {
         return MODES[(MODES.indexOf(mode) + 1) % MODES.length];
     }
@@ -89,6 +112,35 @@
         return true;
     }
 
+    /**
+     * The mode that plays: off when the viewer turned cropping off (Auto, Cover or Fill), else their own
+     * choice for this series or movie (the c key), else the server's mode for the item.
+     */
+    function effectiveMode(enabled, seriesMode, serverMode) {
+        if (!enabled) {
+            return 'off';
+        }
+        if (MODES.indexOf(seriesMode) >= 0) {
+            return seriesMode;
+        }
+        return MODES.indexOf(serverMode) >= 0 ? serverMode : 'per-scene';
+    }
+
+    /**
+     * Older versions kept one global mode in the browser. It becomes the on/off flag: a stored "off"
+     * stays off, any other mode means on, which now plays the server's mode for each item.
+     */
+    function migrateStorage(storage) {
+        var legacy = storage.getItem(LEGACY_MODE_KEY);
+        if (legacy === null) {
+            return;
+        }
+        if (storage.getItem(ENABLED_KEY) === null) {
+            storage.setItem(ENABLED_KEY, legacy === 'off' ? 'off' : 'on');
+        }
+        storage.removeItem(LEGACY_MODE_KEY);
+    }
+
     /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else per scene. */
     function enabledMode(mode, defaultMode) {
         if (mode && mode !== 'off') {
@@ -107,10 +159,14 @@
         module.exports = {
             computeTransform: computeTransform,
             segmentAt: segmentAt,
+            nextBoundaryDelay: nextBoundaryDelay,
+            canvasTransform: canvasTransform,
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
-            enabledMode: enabledMode
+            enabledMode: enabledMode,
+            effectiveMode: effectiveMode,
+            migrateStorage: migrateStorage
         };
         return;
     }
@@ -123,27 +179,44 @@
         loading: false,
         lastSessionCheck: 0,
         autoAspect: true,
-        mode: null,
+        enabled: true,
+        seriesModes: {},
         seeking: false,
+        boundaryTimer: null,
         css: '',
         range: null,
         choosingCrop: false
     };
 
-    function viewerMode() {
+    // Storage can be blocked; then the choices made on this page (state) last until it reloads.
+    function stored(key) {
         try {
-            var stored = window.localStorage.getItem(STORAGE_KEY);
-            if (MODES.indexOf(stored) >= 0) {
-                return stored;
-            }
+            return window.localStorage.getItem(key);
         } catch (e) {
-            // Storage blocked: fall back to the choice made on this page.
+            return null;
         }
-        return state.mode;
+    }
+
+    function store(key, value) {
+        try {
+            window.localStorage.setItem(key, value);
+        } catch (e) {
+            // Storage blocked: the state keeps the choice.
+        }
+    }
+
+    function viewerEnabled() {
+        var flag = stored(ENABLED_KEY);
+        return flag === 'on' || flag === 'off' ? flag === 'on' : state.enabled;
+    }
+
+    function seriesMode() {
+        var id = state.data && state.data.seriesId;
+        return id ? stored(SERIES_KEY + id) || state.seriesModes[id] : null;
     }
 
     function currentMode() {
-        return viewerMode() || (state.data && state.data.defaultMode) || 'per-scene';
+        return effectiveMode(viewerEnabled(), seriesMode(), state.data && state.data.defaultMode);
     }
 
     function load(itemId, source) {
@@ -162,6 +235,7 @@
             if (state.source === source) {
                 state.itemId = itemId;
                 state.data = data;
+                refresh();
             }
         });
     }
@@ -228,9 +302,18 @@
         }
     }
 
-    // ASS and PGS subtitles draw on canvases beside the video, placed by their renderers from the
-    // video's size. Keep them over the whole frame as Jellyfin shows it without the zoom, so they
-    // stay on screen and readable (positioned signs won't line up with the zoomed picture).
+    /**
+     * The transform for a subtitle canvas: the video's own for ASS/SSA, so positioned signs stay on
+     * their spot in the picture; none for anything else. Bitmap subtitles (PGS, VobSub) are often
+     * placed inside the black bars and would be pushed off screen, and an unknown canvas is left alone.
+     */
+    function canvasTransform(className, videoCss, zoomStyled) {
+        return zoomStyled && (' ' + (className || '') + ' ').indexOf(' ' + ASS_CANVAS_CLASS + ' ') >= 0 ? videoCss : '';
+    }
+
+    // Subtitle renderers draw on canvases beside the video, placed from the video's size, some from its
+    // transformed bounds. Keep them over the whole frame as Jellyfin shows it without the zoom. The
+    // ASS canvas then gets the video's transform around the same centre, so it zooms exactly along.
     function placeCanvases(video) {
         var container = video.parentNode;
         if (!container || !video.videoWidth) {
@@ -254,6 +337,29 @@
                 canvas.style.top = top;
                 canvas.style.width = width;
                 canvas.style.height = height;
+            }
+
+            // Compared with what was set, not read back: browsers rewrite transform strings.
+            var transform = canvasTransform(canvas.className, state.css, state.data && state.data.zoomStyledSubtitles);
+            if ((canvas.autocropTransform || '') !== transform) {
+                canvas.autocropTransform = transform;
+                canvas.style.transition = transform ? video.style.transition : '';
+                canvas.style.transformOrigin = transform ? '50% 50%' : '';
+                canvas.style.transform = transform;
+            }
+        }
+    }
+
+    // A renderer that adds or moves its canvas (a subtitle track chosen, its own resize) would put it
+    // over the zoomed video's bounds; put it back while zoomed.
+    function onPlayerMutations(mutations) {
+        if (!state.css || !state.video) {
+            return;
+        }
+        for (var i = 0; i < mutations.length; i++) {
+            if (mutations[i].addedNodes.length || mutations[i].target.tagName === 'CANVAS') {
+                placeCanvases(state.video);
+                return;
             }
         }
     }
@@ -305,6 +411,28 @@
         apply(video, transform, data.transitionMs);
     }
 
+    // One timer for the next segment boundary, from the playback position and rate. Every event that
+    // can move either (seeking, pausing, a rate change, timeupdate) sets it again.
+    function schedule() {
+        clearTimeout(state.boundaryTimer);
+        state.boundaryTimer = null;
+        var video = state.video;
+        var data = state.data;
+        if (!video || video.paused || !data || currentMode() !== 'per-scene') {
+            return;
+        }
+
+        var delay = nextBoundaryDelay(data.segments, video.currentTime, video.playbackRate);
+        if (delay !== null) {
+            state.boundaryTimer = setTimeout(refresh, delay);
+        }
+    }
+
+    function refresh() {
+        update();
+        schedule();
+    }
+
     function onCueChange() {
         if (state.video && state.range) {
             placeCues(state.video, state.range);
@@ -312,6 +440,7 @@
     }
 
     function detach() {
+        clearTimeout(state.boundaryTimer);
         if (state.video) {
             apply(state.video, null, 0);
         }
@@ -321,31 +450,48 @@
         state.data = null;
     }
 
+    function listen(video) {
+        video.autocropListening = true;
+        for (var i = 0; i < VIDEO_EVENTS.length; i++) {
+            video.addEventListener(VIDEO_EVENTS[i], refresh);
+        }
+        video.addEventListener('seeking', function () {
+            state.seeking = true;
+            schedule();
+        });
+        video.addEventListener('seeked', function () {
+            refresh();
+            state.seeking = false;
+        });
+        // The player can change size without the window doing so.
+        if (window.ResizeObserver) {
+            new window.ResizeObserver(refresh).observe(video);
+        }
+        if (window.MutationObserver && video.parentNode) {
+            new window.MutationObserver(onPlayerMutations).observe(video.parentNode,
+                { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+        }
+    }
+
     // Every second: find the player, notice a new item (next episode, autoplay) and follow Jellyfin's
     // aspect-ratio setting. Cover and Fill set object-fit on the video; Auto leaves it at contain.
+    // While playing it also updates, a safety net for background tabs that throttle timers.
     function tick() {
         var video = document.querySelector('.videoPlayerContainer video');
         if (video !== state.video) {
             detach();
             state.video = video;
             if (video && !video.autocropListening) {
-                video.autocropListening = true;
-                video.addEventListener('timeupdate', update);
-                video.addEventListener('loadedmetadata', update);
-                video.addEventListener('seeking', function () {
-                    state.seeking = true;
-                });
-                video.addEventListener('seeked', function () {
-                    update();
-                    state.seeking = false;
-                });
+                listen(video);
             }
         }
         if (!video) {
             return;
         }
 
-        state.autoAspect = window.getComputedStyle(video).objectFit === 'contain';
+        var autoAspect = window.getComputedStyle(video).objectFit === 'contain';
+        var aspectChanged = autoAspect !== state.autoAspect;
+        state.autoAspect = autoAspect;
 
         var tracks = video.textTracks || [];
         for (var i = 0; i < tracks.length; i++) {
@@ -375,17 +521,11 @@
         } else if (!state.itemId || Date.now() - state.lastSessionCheck > 10000) {
             resolveFromSession(source);
         }
-        update();
+        if (!video.paused || aspectChanged) {
+            refresh();
+        }
         // Picks up a subtitle track loaded after the zoom was applied.
         onCueChange();
-    }
-
-    // Per frame so a scene change, a resize or fullscreen is picked up at once; the video events and
-    // the tick cover browsers that throttle animation frames. Cheap: the DOM is only touched when the
-    // transform actually changes.
-    function frame() {
-        update();
-        window.requestAnimationFrame(frame);
     }
 
     var toastTimer = null;
@@ -408,16 +548,24 @@
         }, 1500);
     }
 
-    // The viewer's choice, for this browser: the c key and the aspect-ratio menu both set it.
-    function setMode(mode) {
-        state.mode = mode;
-        try {
-            window.localStorage.setItem(STORAGE_KEY, mode);
-        } catch (err) {
-            // Storage blocked: state.mode keeps the choice until the page reloads.
+    // The aspect-ratio menu turns cropping on or off in this browser, for everything.
+    function setEnabled(on) {
+        state.enabled = on;
+        store(ENABLED_KEY, on ? 'on' : 'off');
+    }
+
+    // The c key picks the mode for this series (or movie) only, so a preference for one show sticks.
+    function setSeriesMode(mode) {
+        var id = state.data && state.data.seriesId;
+        if (id) {
+            state.seriesModes[id] = mode;
+            store(SERIES_KEY + id, mode);
         }
-        toast('Auto-crop: ' + MODE_LABELS[mode]);
-        update();
+    }
+
+    function showMode() {
+        toast('Auto-crop: ' + MODE_LABELS[currentMode()]);
+        refresh();
     }
 
     function onKeyDown(e) {
@@ -426,8 +574,17 @@
         if (!state.video || editing || e.ctrlKey || e.altKey || e.metaKey || (e.key !== 'c' && e.key !== 'C')) {
             return;
         }
+        if (!state.data) {
+            toast('Auto-crop: no black bars to crop');
+            return;
+        }
 
-        setMode(nextMode(currentMode()));
+        var mode = nextMode(currentMode());
+        setSeriesMode(mode);
+        if (mode !== 'off') {
+            setEnabled(true);
+        }
+        showMode();
     }
 
     function menuElement(tag, className) {
@@ -483,7 +640,8 @@
         for (var j = 0; j < items.length; j++) {
             items[j].addEventListener('click', function () {
                 if (!state.choosingCrop && currentMode() !== 'off') {
-                    setMode('off');
+                    setEnabled(false);
+                    showMode();
                 }
             });
         }
@@ -491,11 +649,14 @@
         item.addEventListener('click', function (e) {
             // Jellyfin's own click handler would store "autocrop" as the aspect ratio.
             e.stopPropagation();
-            var mode = enabledMode(currentMode(), state.data && state.data.defaultMode);
             state.choosingCrop = true;
             auto.click();
             state.choosingCrop = false;
-            setMode(mode);
+            setEnabled(true);
+            if (currentMode() === 'off' && state.data) {
+                setSeriesMode(enabledMode('off', state.data.defaultMode));
+            }
+            showMode();
         });
 
         last.parentNode.insertBefore(item, last.nextSibling);
@@ -516,10 +677,17 @@
         }
     }
 
+    try {
+        migrateStorage(window.localStorage);
+    } catch (e) {
+        // Storage blocked: nothing stored to migrate.
+    }
     document.addEventListener('keydown', onKeyDown, true);
     if (window.MutationObserver && document.body) {
         new window.MutationObserver(onDialogs).observe(document.body, { childList: true });
     }
+    window.addEventListener('resize', refresh);
+    document.addEventListener('fullscreenchange', refresh);
+    document.addEventListener('webkitfullscreenchange', refresh);
     setInterval(tick, 1000);
-    window.requestAnimationFrame(frame);
 })();

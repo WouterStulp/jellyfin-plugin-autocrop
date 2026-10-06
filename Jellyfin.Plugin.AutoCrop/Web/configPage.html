@@ -83,6 +83,8 @@
                 .ac-app .ac-check { display: flex; gap: 9px; align-items: flex-start; cursor: pointer; }
                 .ac-app .ac-status { font-size: 12.5px; color: var(--ac-muted); }
                 .ac-app a.ac-link { color: var(--ac-primary); }
+                .ac-app select.ac-mode { padding: 3px 6px; font-size: 12px; }
+                .ac-app .ac-libraries { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px 16px; align-items: center; }
                 </style>
 
                 <div class="ac">
@@ -122,13 +124,14 @@
                                 <button type="button" class="ac-chip" data-filter="no-bars">No bars</button>
                                 <button type="button" class="ac-chip" data-filter="suspicious">Suspicious</button>
                                 <button type="button" class="ac-chip" data-filter="failed">Failed</button>
+                                <button type="button" class="ac-chip" data-filter="series" title="One row per series, to set the mode of every episode at once">Series</button>
                                 <input type="search" class="ac-input ac-search" id="acSearch" placeholder="Search titles" aria-label="Search titles" />
                             </div>
 
                             <div class="ac-panel">
                                 <table class="ac-table">
-                                    <thead><tr><th>Title</th><th>Frame</th><th>Picture</th><th>Segments</th><th>Scanned</th><th>Status</th><th></th></tr></thead>
-                                    <tbody id="acRows"><tr><td colspan="7" class="ac-empty">Loading&hellip;</td></tr></tbody>
+                                    <thead><tr><th>Title</th><th>Frame</th><th>Picture</th><th>Segments</th><th>Scanned</th><th>Status</th><th title="Overrides the series, library and server mode">Mode</th><th></th></tr></thead>
+                                    <tbody id="acRows"><tr><td colspan="8" class="ac-empty">Loading&hellip;</td></tr></tbody>
                                 </table>
                                 <div class="ac-pager"><span id="acPageInfo"></span><button type="button" class="ac-btn small" id="acPrev">Previous</button><button type="button" class="ac-btn small" id="acNext">Next</button></div>
                             </div>
@@ -146,6 +149,7 @@
                                         <option value="static">Static: one crop for the whole file</option>
                                         <option value="off">Off</option>
                                     </select>
+                                    <span class="desc">Libraries can have their own mode below; series, films and episodes in the Overview (Mode column, Series filter).</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Minimum bar (%)</span>
                                     <input class="ac-input" type="number" id="acMinBar" min="0" max="25" step="0.1" />
@@ -155,6 +159,7 @@
                                     <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
                                     <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
                                 </label>
+                                <label class="ac-check"><input type="checkbox" id="acZoomSubtitles" /><span>Zoom styled (ASS) subtitles with the picture<span class="desc" style="display:block;">Keeps signs and positioned text on their spot in the zoomed picture. Blu-ray (PGS) and DVD subtitles always stay on the whole frame, since they are often placed in the black bars.</span></span></label>
                                 <label class="ac-field"><span class="ac-label">Transition (ms)</span>
                                     <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
                                     <span class="desc">How long the zoom takes to follow a scene change; 0 switches instantly.</span>
@@ -162,6 +167,10 @@
                                 <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Every scan keeps its keyframe measurements, so after changing the minimum bar or segment length, <b>Re-analyse all</b> applies them to every scanned item in seconds, without running ffmpeg again.</p>
                                 <div><button type="submit" class="ac-btn primary">Save</button> <button type="button" class="ac-btn" id="acReanalyse">Re-analyse all</button> <span class="ac-status" id="acSaveStatus"></span></div>
                             </form>
+                            <div class="ac-panel ac-form" style="margin-top:18px;">
+                                <div><span class="ac-label">Mode per library</span><span class="desc" style="display:block;">For anime that uses black bars as an effect in fight scenes, for example. Changes apply at once. A series, film or episode&rsquo;s own mode comes first.</span></div>
+                                <div class="ac-libraries" id="acLibraries"><span class="ac-dim">Loading&hellip;</span></div>
+                            </div>
                         </section>
                     </main>
                 </div>
@@ -237,7 +246,25 @@
                         return '<span class="ac-pill ' + esc(row.status) + '"' + title + '>' + esc(labels[row.status] || row.status) + '</span>';
                     }
 
+                    // Empty means inherit: the series', the library's or the server's mode.
+                    function modeSelect(id, mode, inheritLabel) {
+                        var options = [['', inheritLabel], ['per-scene', 'Per scene'], ['static', 'Static'], ['off', 'Off']];
+                        return '<select class="ac-input ac-mode" aria-label="Mode" data-mode-for="' + esc(id) + '">' + options.map(function (o) {
+                            return '<option value="' + o[0] + '"' + (o[0] === (mode || '') ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+                        }).join('') + '</select>';
+                    }
+
+                    function renderSeries(row) {
+                        return '<tr>'
+                            + '<td>' + esc(row.title) + '</td>'
+                            + '<td colspan="5" class="ac-dim">' + esc(row.episodes + ' episode' + (row.episodes === 1 ? '' : 's') + ' scanned \u00b7 ' + row.withBars + ' with bars') + '</td>'
+                            + '<td>' + modeSelect(row.itemId, row.mode, 'Inherit') + '</td>'
+                            + '<td></td>'
+                            + '</tr>';
+                    }
+
                     function renderRow(row) {
+                        if (row.kind === 'series') return renderSeries(row);
                         var failed = row.status === 'failed';
                         var picture = failed || !row.crop ? '<span class="ac-dim">\u2013</span>'
                             : esc(row.crop.width + '\u00d7' + row.crop.height) + ' <span class="ac-dim">\u00b7 ' + esc(ratio(row.crop)) + '</span>';
@@ -249,6 +276,7 @@
                             + '<td class="ac-mono">' + segments + '</td>'
                             + '<td class="ac-mono">' + esc(formatDate(row.scannedAt)) + (row.source ? '<span class="ac-tag">' + esc(row.source) + '</span>' : '') + '</td>'
                             + '<td>' + statusPill(row) + '</td>'
+                            + '<td>' + modeSelect(row.itemId, row.mode, 'Inherit') + '</td>'
                             + '<td><button type="button" class="ac-btn small" data-rescan="' + esc(row.itemId) + '">Rescan</button></td>'
                             + '</tr>';
                     }
@@ -258,13 +286,13 @@
                             state.total = page.total;
                             $('acRows').innerHTML = page.items.length
                                 ? page.items.map(renderRow).join('')
-                                : '<tr><td colspan="7" class="ac-empty">Nothing here yet. Scans run nightly, or use \u201cScan library now\u201d.</td></tr>';
+                                : '<tr><td colspan="8" class="ac-empty">Nothing here yet. Scans run nightly, or use \u201cScan library now\u201d.</td></tr>';
                             var last = Math.min(state.start + PAGE_SIZE, page.total);
                             $('acPageInfo').textContent = page.total ? (state.start + 1) + '\u2013' + last + ' of ' + page.total : '';
                             $('acPrev').disabled = state.start === 0;
                             $('acNext').disabled = last >= page.total;
                         }, function () {
-                            $('acRows').innerHTML = '<tr><td colspan="7" class="ac-empty">Couldn\u2019t load the scan results.</td></tr>';
+                            $('acRows').innerHTML = '<tr><td colspan="8" class="ac-empty">Couldn\u2019t load the scan results.</td></tr>';
                         });
                     }
 
@@ -337,6 +365,30 @@
                         });
                     }
 
+                    function setMode(select) {
+                        var path = 'AutoCrop/Modes/' + encodeURIComponent(select.getAttribute('data-mode-for'));
+                        var request = select.value
+                            ? ApiClient.ajax({ url: ApiClient.getUrl(path, { mode: select.value }), type: 'POST' })
+                            : ApiClient.ajax({ url: ApiClient.getUrl(path), type: 'DELETE' });
+                        select.disabled = true;
+                        request.then(function () {
+                            select.disabled = false;
+                        }, function () {
+                            select.disabled = false;
+                            Dashboard.alert('Couldn\u2019t change the mode.');
+                        });
+                    }
+
+                    function loadLibraries() {
+                        getJson('AutoCrop/Libraries').then(function (libraries) {
+                            $('acLibraries').innerHTML = libraries.length ? libraries.map(function (l) {
+                                return '<span>' + esc(l.name) + '</span>' + modeSelect(l.id, l.mode, 'Server default');
+                            }).join('') : '<span class="ac-dim">No movie or TV libraries.</span>';
+                        }, function () {
+                            $('acLibraries').innerHTML = '<span class="ac-dim">Couldn\u2019t load the libraries.</span>';
+                        });
+                    }
+
                     function loadSettings() {
                         ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (c) {
                             $('acEnabled').checked = c.Enabled !== false;
@@ -346,6 +398,7 @@
                             $('acMinBar').value = c.MinimumBarPercent;
                             $('acMinSegment').value = c.MinimumSegmentSeconds;
                             $('acTransition').value = c.TransitionMs;
+                            $('acZoomSubtitles').checked = c.ZoomStyledSubtitles !== false;
                         });
                     }
 
@@ -365,6 +418,7 @@
                             c.MinimumBarPercent = number('acMinBar', 1);
                             c.MinimumSegmentSeconds = number('acMinSegment', 30);
                             c.TransitionMs = Math.round(number('acTransition', 300));
+                            c.ZoomStyledSubtitles = $('acZoomSubtitles').checked;
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
                         }).then(function (result) {
                             Dashboard.processPluginConfigurationUpdateResult(result);
@@ -416,6 +470,9 @@
                         var button = e.target.closest('button[data-rescan]');
                         if (button) rescan(button);
                     });
+                    root.addEventListener('change', function (e) {
+                        if (e.target.matches('select[data-mode-for]')) setMode(e.target);
+                    });
                     $('acPrev').addEventListener('click', function () { state.start = Math.max(0, state.start - PAGE_SIZE); loadRows(); });
                     $('acNext').addEventListener('click', function () { state.start += PAGE_SIZE; loadRows(); });
                     $('acScanNow').addEventListener('click', scanNow);
@@ -424,6 +481,7 @@
 
                     refresh();
                     loadSettings();
+                    loadLibraries();
                     findTask().then(function (task) {
                         if (showProgress(task)) poll();
                     }, function () {});

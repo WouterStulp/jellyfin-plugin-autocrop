@@ -103,6 +103,37 @@ var tests = {
         assert.strictEqual(crop.segmentAt([{ start: 0, end: 10 }], 5), 0);
     },
 
+    'the next boundary is the next segment start, at the playback rate, just past it': function () {
+        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }, { start: 900, end: 1500 }];
+        var exact = 8000;
+        var delay = crop.nextBoundaryDelay(segments, 590, 1);
+        assert.ok(delay >= exact && delay - exact <= 100, 'within 100 ms after the boundary: ' + delay);
+        near(crop.nextBoundaryDelay(segments, 590, 2), crop.nextBoundaryDelay(segments, 590, 1) - exact / 2, 'twice as fast');
+        near(crop.nextBoundaryDelay(segments, 598, 1) - crop.nextBoundaryDelay(segments, 590, 1), 302000 - exact, 'at a boundary: the next one');
+        near(crop.nextBoundaryDelay(segments, -5, 1) - crop.nextBoundaryDelay(segments, 590, 1), 598000 + 5000 - exact, 'before the start');
+    },
+
+    'no boundary ahead means no timer': function () {
+        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }];
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 650, 1), null, 'last segment');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, 0), null, 'rate 0');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, -1), null, 'reverse');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, NaN), null, 'unknown rate');
+        assert.strictEqual(crop.nextBoundaryDelay([{ start: 0, end: 900 }], 100, 1), null, 'one segment');
+        assert.strictEqual(crop.nextBoundaryDelay(null, 100, 1), null, 'static file');
+    },
+
+    'ASS/SSA canvases zoom with the video, bitmap and unknown canvases never do': function () {
+        var css = 'translate(0.00px, 0.00px) scale(1.3333)';
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', css, true), css, 'JavascriptSubtitlesOctopus');
+        assert.strictEqual(crop.canvasTransform('foo libassjs-canvas', css, true), css, 'with another class');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', css, false), '', 'setting off');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas', '', true), '', 'no zoom');
+        assert.strictEqual(crop.canvasTransform('', css, true), '', 'libpgs and libbitsub canvases have no class');
+        assert.strictEqual(crop.canvasTransform(undefined, css, true), '');
+        assert.strictEqual(crop.canvasTransform('libassjs-canvas-parent', css, true), '', 'only the canvas itself');
+    },
+
     'the c key cycles per-scene, static, off': function () {
         assert.strictEqual(crop.nextMode('per-scene'), 'static');
         assert.strictEqual(crop.nextMode('static'), 'off');
@@ -125,6 +156,54 @@ var tests = {
         assert.strictEqual(crop.enabledMode('off', 'static'), 'static');
         assert.strictEqual(crop.enabledMode('off', 'off'), 'per-scene');
         assert.strictEqual(crop.enabledMode('off', null), 'per-scene');
+    },
+
+    'the viewer turning cropping off beats everything': function () {
+        assert.strictEqual(crop.effectiveMode(false, 'static', 'per-scene'), 'off');
+        assert.strictEqual(crop.effectiveMode(false, null, 'per-scene'), 'off');
+    },
+
+    'while on, the series choice beats the server mode': function () {
+        assert.strictEqual(crop.effectiveMode(true, 'static', 'per-scene'), 'static');
+        assert.strictEqual(crop.effectiveMode(true, 'per-scene', 'off'), 'per-scene', 'the viewer turned an off series on');
+        assert.strictEqual(crop.effectiveMode(true, 'off', 'per-scene'), 'off');
+    },
+
+    'without a series choice the server mode plays, and off from the server does nothing': function () {
+        assert.strictEqual(crop.effectiveMode(true, null, 'static'), 'static');
+        assert.strictEqual(crop.effectiveMode(true, undefined, 'off'), 'off');
+        assert.strictEqual(crop.effectiveMode(true, 'zoom', undefined), 'per-scene');
+    },
+
+    'the old global mode becomes the on/off flag': function () {
+        function storage(values) {
+            return {
+                values: values,
+                getItem: function (key) {
+                    return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
+                },
+                setItem: function (key, value) {
+                    this.values[key] = String(value);
+                },
+                removeItem: function (key) {
+                    delete this.values[key];
+                }
+            };
+        }
+
+        var cases = [
+            [{ 'autocrop.mode': 'off' }, { 'autocrop.enabled': 'off' }],
+            [{ 'autocrop.mode': 'static' }, { 'autocrop.enabled': 'on' }],
+            [{ 'autocrop.mode': 'per-scene' }, { 'autocrop.enabled': 'on' }],
+            [{ 'autocrop.mode': 'off', 'autocrop.enabled': 'on' }, { 'autocrop.enabled': 'on' }],
+            [{}, {}],
+            [{ 'autocrop.enabled': 'off' }, { 'autocrop.enabled': 'off' }]
+        ];
+        cases.forEach(function (c) {
+            var s = storage(c[0]);
+            crop.migrateStorage(s);
+            assert.deepStrictEqual(s.values, c[1], JSON.stringify(c[0]));
+        });
     }
 };
 

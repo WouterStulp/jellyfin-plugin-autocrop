@@ -43,7 +43,16 @@ Some Blu-ray remuxes flag hardly any keyframes (three in a 24-minute episode), a
 -vf "select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)',cropdetect=limit=0.094:round=2:reset=1:skip=0"
 ```
 
-The analysis is the same; the result's source is `frames` instead of `keyframes`. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
+The analysis is the same; the result's source is `frames` instead of `keyframes`.
+
+With Intel QSV on Linux this pass keeps the frames on the GPU until `select` has picked one, so only one frame per 2 seconds is copied to system memory:
+
+```
+-init_hw_device vaapi=va:/dev/dri/renderD128 -init_hw_device qsv=qs@va -hwaccel qsv -hwaccel_output_format qsv ...
+-vf "select=...,hwdownload,format=nv12,cropdetect=..."
+```
+
+On a Pentium Gold 8505 that measured 5 minutes of an h264 Blu-ray remux in 23 s instead of 52 s, with byte-identical cropdetect output. The download format follows the pixel format the keyframe pass saw: `nv12` for 8-bit, `p010le` for 10-bit 4:2:0; any other format takes the usual path. The same trick on plain VAAPI surfaces (`-hwaccel_output_format vaapi`) silently dropped three quarters of the frames, so the QSV result is only used when ffmpeg succeeds and gives at least 90% of one sample per 2 seconds. Otherwise the file is measured the usual way. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
 
 From those keyframes the plugin builds:
 
@@ -88,7 +97,7 @@ The keyframes make the analysis cheap to redo:
 - The scheduled task scans everything that has no result yet or whose file changed, and drops results for items that left the library.
 - New or updated movies and episodes are queued into one background worker after a 30-second settle delay, so files that are still being copied aren't measured early.
 - Only one ffmpeg runs at a time, at idle priority (nice 19 on Linux), and cancelling the task stops it. When the task and the queue pick the same item, the second one finds a current result and skips it, and an item waits in the queue only once.
-- Decoding runs on the GPU Jellyfin uses for transcoding (VAAPI for Intel QSV/VAAPI on Linux, CUDA for NVENC, VideoToolbox on macOS). Decoding is bit-exact, so the result is identical to the CPU; on an Intel N-series/Pentium iGPU HEVC scans about 3× faster. If the GPU can't decode a file, it is measured again on the CPU. Turn it off with "Decode on the GPU" in the settings.
+- Decoding runs on the GPU Jellyfin uses for transcoding (VAAPI for Intel QSV/VAAPI on Linux, CUDA for NVENC, VideoToolbox on macOS; QSV itself for the 2-second pass, see Detection). Decoding is bit-exact, so the result is identical to the CPU; on an Intel N-series/Pentium iGPU HEVC scans about 3× faster. If the GPU can't decode a file, it is measured again on the CPU. Turn it off with "Decode on the GPU" in the settings.
 - Virtual items, disc images and folders, `.strm` files and remote paths are skipped.
 
 ## Playback
@@ -96,21 +105,28 @@ The keyframes make the analysis cheap to redo:
 The plugin adds a small script to the web client's `index.html`. It does this at request time without changing any files, and also registers with the File Transformation plugin if that is installed. The script:
 
 1. Notices when the player starts or the item changes, such as the next episode or autoplay. With direct play the item id comes from the video URL. Transcoded (HLS) playback uses a `blob:` URL, so it asks Jellyfin's sessions API what this device is playing.
-2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see.
-3. Computes the zoom. Jellyfin shows the whole frame with `object-fit: contain` at scale `k = min(cw/fw, ch/fh)`. The picture area alone would fit at `k2 = min(cw/aw, ch/ah)`. The video is scaled by `s = k2 / k` around its centre and shifted so the centre of the picture area lands in the centre of the screen. Overflow is hidden by the player container.
-4. In per-scene mode, follows `currentTime` and applies each segment's box with a short CSS transition. After a seek it jumps instantly.
-5. Recalculates on resize and fullscreen, and removes the zoom when playback stops, the item has no crop, the mode is off, or Jellyfin's aspect setting isn't Auto.
+2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see. The answer includes the item's mode: its own override, else its series', else its library's (found through Jellyfin's collection folders for the item), else the server default. Overrides are kept in the plugin configuration as `{Id, Mode}` pairs.
+3. Picks the mode. The browser keeps one on/off flag (`autocrop.enabled`): **Crop black bars** turns it on, Auto, Cover and Fill turn it off. While on, the item plays in the server's mode, unless the viewer pressed **c** for this series (or film): that choice is kept per series in `autocrop.series.{id}`. A server mode of `off` means the player does nothing until the viewer turns it on with **c** or **Crop black bars**. The old global `autocrop.mode` key is migrated once: `off` stays off, anything else becomes on.
+4. Computes the zoom. Jellyfin shows the whole frame with `object-fit: contain` at scale `k = min(cw/fw, ch/fh)`. The picture area alone would fit at `k2 = min(cw/aw, ch/ah)`. The video is scaled by `s = k2 / k` around its centre and shifted so the centre of the picture area lands in the centre of the screen. Overflow is hidden by the player container.
+5. In per-scene mode, follows `currentTime` and applies each segment's box with a short CSS transition. After a seek it jumps instantly. It doesn't run per frame: on every playback event (`timeupdate`, seeking, play, pause, a rate change) it updates and sets one timer for the next segment boundary, from the position and the playback rate, so a switch lands within a few milliseconds of it. While playing, a check every second covers background tabs that throttle timers.
+6. Places subtitles. Native text cues are laid out inside the video element, so they are moved into the part of it that is still on screen. Styled subtitles draw on canvases beside the video: ASS/SSA on JavascriptSubtitlesOctopus' canvas (class `libassjs-canvas`), PGS and VobSub on libpgs' or libbitsub's (no class). Every canvas is kept over the whole frame as Jellyfin shows it without the zoom, since some renderers would place it from the zoomed video's bounds. The ASS canvas then gets exactly the video's transform around the same centre, so signs stay on their spot ("Zoom styled (ASS) subtitles with the picture", on by default). Bitmap subtitles stay on the unzoomed frame: they are often placed inside the black bars, and zooming them would push them off screen. A canvas that can't be identified is treated like a bitmap one. A mutation observer puts a canvas back when a renderer adds or moves it.
+7. Recalculates when the window or the player resizes and on fullscreen, and removes the zoom when playback stops, the item has no crop, the mode is off, or Jellyfin's aspect setting isn't Auto.
 
 ## API
 
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
-| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, default mode and transition for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
+| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, the item's mode (`defaultMode`), the series (or movie) id a viewer's mode is kept for, and the transition, for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
 | `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes, and trickplay results that no longer pass, for a scan. |
 | `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay and how many are suspicious. |
-| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`). |
+| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`), each with its mode override. `series` lists series instead. |
+| `GET /AutoCrop/Libraries` | administrator | Movie, TV and mixed libraries with their mode. |
+| `POST /AutoCrop/Modes/{id}?mode=` | administrator | Sets the mode (`per-scene`, `static`, `off`) of a library, series, movie or episode. |
+| `DELETE /AutoCrop/Modes/{id}` | administrator | Clears it, so it inherits again. |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
+
+The dashboard's titles come from one library query instead of a lookup per result. It runs in the background as soon as Jellyfin has finished starting, so the first visit after a restart is instant, and the list is kept current from the library's item added, updated and removed events. It is rebuilt every 30 minutes as a safety net.
 
 ## Development
 

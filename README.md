@@ -25,17 +25,17 @@ The first scan of your library runs in the background. Most files are done in a 
 
 ## Using it
 
-While watching in the browser, open the **⚙ settings → Aspect Ratio** and choose **Crop black bars**. Choose **Auto**, **Zoom** or **Stretch** to turn it off again.
+While watching in the browser, open the **⚙ settings → Aspect Ratio** and choose **Crop black bars**. Choose **Auto**, **Zoom** or **Stretch** to turn it off again. This is remembered in that browser, for everything you watch.
 
-You can also press **C** during playback to switch between:
+While it's on, each film or episode plays in the mode the server sets for it (normally per scene). Press **C** during playback to switch between:
 
 | Mode | What you see |
 | --- | --- |
-| **Per scene** (default) | The crop follows the picture shape, e.g. zooms out for IMAX scenes. |
+| **Per scene** | The crop follows the picture shape, e.g. zooms out for IMAX scenes. |
 | **Static** | One crop for the whole file. |
 | **Off** | Normal playback. |
 
-Your choice is remembered in that browser.
+This choice is remembered in that browser for the whole series (or that film).
 
 ## Dashboard and settings
 
@@ -43,21 +43,25 @@ Go to **Dashboard → Plugins → AutoCrop**.
 
 - **Overview:** every measured file with its picture size and shape. Search, filters, **Rescan** per file, and **Scan library now**.
 - **Settings:**
-  - default mode
+  - default mode, and a mode per library
   - minimum bar size (1%)
   - minimum scene length (30 s)
   - zoom transition (300 ms)
+  - zoom styled (ASS) subtitles with the picture (on)
   - GPU decoding (on)
   - use trickplay images to speed up scanning (on)
 
   After changing a setting, **Re-analyse all** applies it to everything in seconds.
+- **Mode per series, film or episode:** the **Mode** column in the overview, and the **Series** filter to set a whole series at once. Useful for anime that use black bars as an effect in fight scenes (Black Clover, Jujutsu Kaisen): set them to **Static** so the picture doesn't zoom in during those scenes.
+
+  A file uses its own mode, else its series', else its library's, else the default mode.
 
 Files marked **suspicious** gave a result that doesn't look like any real film shape, so AutoCrop leaves them uncropped.
 
 ## Limitations
 
 - **Browser only.** It works in Jellyfin's web player (also inside apps that use it, like Jellyfin Media Player). Android TV, Swiftfin, Infuse and Kodi aren't supported.
-- **Styled subtitles** (ASS/SSA, Blu-ray PGS) stay readable, but signs placed on screen may not line up exactly with the zoomed picture. Normal subtitles are fine.
+- **Blu-ray (PGS) and DVD subtitles** stay on the whole, unzoomed frame, because they are often placed in the black bars. Styled ASS/SSA subtitles zoom with the picture, so signs stay on their spot (turn that off in the settings). Normal subtitles are fine.
 
 ## More
 

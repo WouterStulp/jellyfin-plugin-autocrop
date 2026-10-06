@@ -19,6 +19,8 @@ public sealed class CropdetectParser
 
     private static readonly Regex SampleAspect = new(@"\bSAR (\d+):(\d+)", RegexOptions.Compiled);
 
+    private static readonly Regex PixelFormatName = new(@"Video:\s*[^,]+,\s*([a-z0-9_]+)", RegexOptions.Compiled);
+
     private static readonly Regex DurationLine = new(
         @"^\s*Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -37,6 +39,9 @@ public sealed class CropdetectParser
 
     /// <summary>The output stream's sample aspect ratio (SAR); null when ffmpeg doesn't report one.</summary>
     public double? PixelAspect { get; private set; }
+
+    /// <summary>The pixel format cropdetect saw (yuv420p, p010le, ...), from the output stream.</summary>
+    public string? PixelFormat { get; private set; }
 
     public void AddLine(string line)
     {
@@ -61,6 +66,8 @@ public sealed class CropdetectParser
             {
                 FrameWidth = int.Parse(size.Groups[1].Value, CultureInfo.InvariantCulture);
                 FrameHeight = int.Parse(size.Groups[2].Value, CultureInfo.InvariantCulture);
+                var format = PixelFormatName.Match(line, video);
+                PixelFormat = format.Success ? format.Groups[1].Value : null;
                 var sar = SampleAspect.Match(line, size.Index);
                 if (sar.Success && Int(sar, 1) > 0 && Int(sar, 2) > 0)
                     PixelAspect = (double)Int(sar, 1) / Int(sar, 2);

@@ -87,6 +87,15 @@ public class CropdetectParserTests
         Assert.Equal(expected, parser.PixelAspect);
     }
 
+    [Theory]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9]", "yuv420p")]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, p010le(tv, bt2020nc/bt2020/smpte2084), 3840x2160", "p010le")]
+    [InlineData("Stream #0:0: Video: wrapped_avframe, nv12, 1920x1080", "nv12")]
+    public void PixelFormat_ComesFromTheOutputStream(string line, string expected)
+    {
+        Assert.Equal(expected, Parse("Output #0, null, to 'pipe:':\n" + line).PixelFormat);
+    }
+
     [Fact]
     public void Duration_IsParsed()
     {
