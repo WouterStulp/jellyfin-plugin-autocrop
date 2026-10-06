@@ -9,6 +9,9 @@
     var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
     var MENU_LABEL = 'Crop black bars';
+    var VIDEO_EVENTS = ['timeupdate', 'loadedmetadata', 'play', 'playing', 'pause', 'ratechange'];
+    // Lands just past a boundary rather than just before it, where nothing would change yet.
+    var BOUNDARY_MARGIN_MS = 15;
     var VIDEO_ID = /\/videos\/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
     /**
@@ -69,6 +72,21 @@
             }
         }
         return low;
+    }
+
+    /**
+     * Milliseconds of wall-clock time until playback at rate reaches the start of the segment after
+     * time (seconds), plus a small margin; null when there is none ahead or playback doesn't advance.
+     */
+    function nextBoundaryDelay(segments, time, rate) {
+        if (!segments || segments.length < 2 || !(rate > 0)) {
+            return null;
+        }
+        var next = segmentAt(segments, time) + 1;
+        if (next >= segments.length) {
+            return null;
+        }
+        return Math.max(0, (segments[next].start - time) * 1000 / rate) + BOUNDARY_MARGIN_MS;
     }
 
     function nextMode(mode) {
@@ -138,6 +156,7 @@
         module.exports = {
             computeTransform: computeTransform,
             segmentAt: segmentAt,
+            nextBoundaryDelay: nextBoundaryDelay,
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
@@ -159,6 +178,7 @@
         enabled: true,
         seriesModes: {},
         seeking: false,
+        boundaryTimer: null,
         css: '',
         range: null,
         choosingCrop: false
@@ -211,6 +231,7 @@
             if (state.source === source) {
                 state.itemId = itemId;
                 state.data = data;
+                refresh();
             }
         });
     }
@@ -354,6 +375,28 @@
         apply(video, transform, data.transitionMs);
     }
 
+    // One timer for the next segment boundary, from the playback position and rate. Every event that
+    // can move either (seeking, pausing, a rate change, timeupdate) sets it again.
+    function schedule() {
+        clearTimeout(state.boundaryTimer);
+        state.boundaryTimer = null;
+        var video = state.video;
+        var data = state.data;
+        if (!video || video.paused || !data || currentMode() !== 'per-scene') {
+            return;
+        }
+
+        var delay = nextBoundaryDelay(data.segments, video.currentTime, video.playbackRate);
+        if (delay !== null) {
+            state.boundaryTimer = setTimeout(refresh, delay);
+        }
+    }
+
+    function refresh() {
+        update();
+        schedule();
+    }
+
     function onCueChange() {
         if (state.video && state.range) {
             placeCues(state.video, state.range);
@@ -361,6 +404,7 @@
     }
 
     function detach() {
+        clearTimeout(state.boundaryTimer);
         if (state.video) {
             apply(state.video, null, 0);
         }
@@ -370,31 +414,44 @@
         state.data = null;
     }
 
+    function listen(video) {
+        video.autocropListening = true;
+        for (var i = 0; i < VIDEO_EVENTS.length; i++) {
+            video.addEventListener(VIDEO_EVENTS[i], refresh);
+        }
+        video.addEventListener('seeking', function () {
+            state.seeking = true;
+            schedule();
+        });
+        video.addEventListener('seeked', function () {
+            refresh();
+            state.seeking = false;
+        });
+        // The player can change size without the window doing so.
+        if (window.ResizeObserver) {
+            new window.ResizeObserver(refresh).observe(video);
+        }
+    }
+
     // Every second: find the player, notice a new item (next episode, autoplay) and follow Jellyfin's
     // aspect-ratio setting. Cover and Fill set object-fit on the video; Auto leaves it at contain.
+    // While playing it also updates, a safety net for background tabs that throttle timers.
     function tick() {
         var video = document.querySelector('.videoPlayerContainer video');
         if (video !== state.video) {
             detach();
             state.video = video;
             if (video && !video.autocropListening) {
-                video.autocropListening = true;
-                video.addEventListener('timeupdate', update);
-                video.addEventListener('loadedmetadata', update);
-                video.addEventListener('seeking', function () {
-                    state.seeking = true;
-                });
-                video.addEventListener('seeked', function () {
-                    update();
-                    state.seeking = false;
-                });
+                listen(video);
             }
         }
         if (!video) {
             return;
         }
 
-        state.autoAspect = window.getComputedStyle(video).objectFit === 'contain';
+        var autoAspect = window.getComputedStyle(video).objectFit === 'contain';
+        var aspectChanged = autoAspect !== state.autoAspect;
+        state.autoAspect = autoAspect;
 
         var tracks = video.textTracks || [];
         for (var i = 0; i < tracks.length; i++) {
@@ -424,17 +481,11 @@
         } else if (!state.itemId || Date.now() - state.lastSessionCheck > 10000) {
             resolveFromSession(source);
         }
-        update();
+        if (!video.paused || aspectChanged) {
+            refresh();
+        }
         // Picks up a subtitle track loaded after the zoom was applied.
         onCueChange();
-    }
-
-    // Per frame so a scene change, a resize or fullscreen is picked up at once; the video events and
-    // the tick cover browsers that throttle animation frames. Cheap: the DOM is only touched when the
-    // transform actually changes.
-    function frame() {
-        update();
-        window.requestAnimationFrame(frame);
     }
 
     var toastTimer = null;
@@ -474,7 +525,7 @@
 
     function showMode() {
         toast('Auto-crop: ' + MODE_LABELS[currentMode()]);
-        update();
+        refresh();
     }
 
     function onKeyDown(e) {
@@ -595,6 +646,8 @@
     if (window.MutationObserver && document.body) {
         new window.MutationObserver(onDialogs).observe(document.body, { childList: true });
     }
+    window.addEventListener('resize', refresh);
+    document.addEventListener('fullscreenchange', refresh);
+    document.addEventListener('webkitfullscreenchange', refresh);
     setInterval(tick, 1000);
-    window.requestAnimationFrame(frame);
 })();

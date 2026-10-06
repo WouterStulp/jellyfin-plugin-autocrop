@@ -103,6 +103,26 @@ var tests = {
         assert.strictEqual(crop.segmentAt([{ start: 0, end: 10 }], 5), 0);
     },
 
+    'the next boundary is the next segment start, at the playback rate, just past it': function () {
+        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }, { start: 900, end: 1500 }];
+        var exact = 8000;
+        var delay = crop.nextBoundaryDelay(segments, 590, 1);
+        assert.ok(delay >= exact && delay - exact <= 100, 'within 100 ms after the boundary: ' + delay);
+        near(crop.nextBoundaryDelay(segments, 590, 2), crop.nextBoundaryDelay(segments, 590, 1) - exact / 2, 'twice as fast');
+        near(crop.nextBoundaryDelay(segments, 598, 1) - crop.nextBoundaryDelay(segments, 590, 1), 302000 - exact, 'at a boundary: the next one');
+        near(crop.nextBoundaryDelay(segments, -5, 1) - crop.nextBoundaryDelay(segments, 590, 1), 598000 + 5000 - exact, 'before the start');
+    },
+
+    'no boundary ahead means no timer': function () {
+        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }];
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 650, 1), null, 'last segment');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, 0), null, 'rate 0');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, -1), null, 'reverse');
+        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, NaN), null, 'unknown rate');
+        assert.strictEqual(crop.nextBoundaryDelay([{ start: 0, end: 900 }], 100, 1), null, 'one segment');
+        assert.strictEqual(crop.nextBoundaryDelay(null, 100, 1), null, 'static file');
+    },
+
     'the c key cycles per-scene, static, off': function () {
         assert.strictEqual(crop.nextMode('per-scene'), 'static');
         assert.strictEqual(crop.nextMode('static'), 'off');
