@@ -13,6 +13,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<CropScanner>();
         serviceCollection.AddSingleton<ScanQueue>();
         serviceCollection.AddHostedService(sp => sp.GetRequiredService<ScanQueue>());
+        serviceCollection.AddSingleton<LibraryTitles>();
+        serviceCollection.AddHostedService(sp => sp.GetRequiredService<LibraryTitles>());
 
         // Adds the player script to the web client without the File Transformation plugin.
         serviceCollection.AddSingleton<IStartupFilter, ScriptInjectionStartupFilter>();

@@ -121,6 +121,8 @@ The plugin adds a small script to the web client's `index.html`. It does this at
 | `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`). |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
 
+The dashboard's titles come from one library query instead of a lookup per result. It runs in the background as soon as Jellyfin has finished starting, so the first visit after a restart is instant, and the list is kept current from the library's item added, updated and removed events. It is rebuilt every 30 minutes as a safety net.
+
 ## Development
 
 No local .NET needed:

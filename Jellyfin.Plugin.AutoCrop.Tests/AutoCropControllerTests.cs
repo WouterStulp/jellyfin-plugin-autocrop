@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.AutoCrop.Api;
+using MediaBrowser.Controller;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -26,11 +27,12 @@ public class AutoCropControllerTests : IDisposable
     private readonly CropStore _store;
     private readonly CropScanner _scanner;
     private readonly ScanQueue _queue;
+    private readonly LibraryTitles _titles;
 
     public AutoCropControllerTests()
     {
         TestPlugin.Create(_dir);
-        LibraryTitles.ResetForTesting();
+        _titles = new LibraryTitles(_library, Substitute.For<IServerApplicationHost>(), NullLogger<LibraryTitles>.Instance);
         _users.GetUserById(_alice.Id).Returns(_alice);
         _store = new CropStore(() => Path.Combine(_dir, "crops.json"), NullLogger<CropStore>.Instance);
         _scanner = new CropScanner(Substitute.For<IMediaEncoder>(), Substitute.For<MediaBrowser.Common.Configuration.IConfigurationManager>(), Substitute.For<MediaBrowser.Controller.Trickplay.ITrickplayManager>(), _store, NullLogger<CropScanner>.Instance);
@@ -48,7 +50,7 @@ public class AutoCropControllerTests : IDisposable
         var identity = userId == null
             ? new ClaimsIdentity()
             : new ClaimsIdentity(new[] { new Claim("Jellyfin-UserId", userId.Value.ToString("N")) }, "Test");
-        return new AutoCropController(_library, _users, _store, _scanner, _queue)
+        return new AutoCropController(_library, _users, _store, _scanner, _queue, _titles)
         {
             ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) } },
         };
