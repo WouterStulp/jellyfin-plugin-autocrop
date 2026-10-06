@@ -151,6 +151,12 @@ var tests = {
         assert.ok(!crop.isAspectSheet(null));
     },
 
+    'the extended aspect sheet is moved up only when it would leave the window': function () {
+        assert.strictEqual(crop.fitTop(900, 170, 1080, 10), 900, 'fits: unchanged');
+        assert.strictEqual(crop.fitTop(940, 170, 1080, 10), 900, 'overflows by 30: moved up');
+        assert.strictEqual(crop.fitTop(5, 2000, 1080, 10), 10, 'taller than the window: pinned to the top');
+    },
+
     'Crop black bars keeps the chosen mode, else the server default, never off': function () {
         assert.strictEqual(crop.enabledMode('static', 'per-scene'), 'static');
         assert.strictEqual(crop.enabledMode('off', 'static'), 'static');

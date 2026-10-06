@@ -164,6 +164,7 @@
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
+            fitTop: fitTop,
             enabledMode: enabledMode,
             effectiveMode: effectiveMode,
             migrateStorage: migrateStorage
@@ -660,6 +661,24 @@
         });
 
         last.parentNode.insertBefore(item, last.nextSibling);
+        keepOnScreen(sheet);
+    }
+
+    // Jellyfin positions the sheet for its own options before ours is added; one more row can push
+    // it past the bottom of the window, so move it up by the overflow.
+    function fitTop(top, height, viewportHeight, margin) {
+        return Math.max(margin, Math.min(top, viewportHeight - height - margin));
+    }
+
+    function keepOnScreen(sheet) {
+        var top = parseFloat(sheet.style.top);
+        if (sheet.style.position !== 'fixed' || isNaN(top)) {
+            return;
+        }
+        var fitted = fitTop(top, sheet.offsetHeight, window.innerHeight, 10);
+        if (fitted !== top) {
+            sheet.style.top = fitted + 'px';
+        }
     }
 
     // Jellyfin appends every dialog, the player's action sheets included, to the body.
