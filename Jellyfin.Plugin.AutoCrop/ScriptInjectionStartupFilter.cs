@@ -21,8 +21,10 @@ internal static class PlayerScript
 {
     internal const string Marker = "AutoCrop/Web/autocrop.js";
 
-    // Relative to /web/ so it resolves under a server base URL (e.g. /jellyfin/web/).
-    internal const string Tag = "<script src=\"../AutoCrop/Web/autocrop.js\" defer></script>";
+    // Relative to /web/ so it resolves under a server base URL (e.g. /jellyfin/web/). The version in
+    // the URL makes browsers fetch the new script after a plugin update instead of a cached copy.
+    internal static readonly string Tag =
+        $"<script src=\"../AutoCrop/Web/autocrop.js?v={typeof(PlayerScript).Assembly.GetName().Version}\" defer></script>";
 
     /// <summary>Inserts <see cref="Tag"/> before &lt;/head&gt;, unless it is already there or this isn't an HTML page.</summary>
     internal static string Inject(string html)
