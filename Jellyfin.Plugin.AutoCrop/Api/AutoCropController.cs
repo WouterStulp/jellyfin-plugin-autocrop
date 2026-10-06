@@ -177,7 +177,12 @@ public class AutoCropController : ControllerBase
     public ActionResult GetScript()
     {
         var stream = typeof(AutoCropController).Assembly.GetManifestResourceStream("Jellyfin.Plugin.AutoCrop.Web.autocrop.js");
-        return stream == null ? NotFound() : File(stream, "application/javascript");
+        if (stream == null)
+            return NotFound();
+
+        // Revalidate on every load, so a plugin update reaches browsers that cached the old script.
+        Response.Headers.CacheControl = "no-cache";
+        return File(stream, "application/javascript");
     }
 
     internal static string Status(CropResult result)

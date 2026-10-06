@@ -291,4 +291,14 @@ public class AutoCropControllerTests : IDisposable
         Assert.NotNull(method.GetCustomAttribute<AllowAnonymousAttribute>());
         Assert.IsType<FileStreamResult>(Controller(null).GetScript());
     }
+
+    [Fact]
+    public void Script_IsRevalidatedOnEveryLoad()
+    {
+        var controller = Controller(null);
+
+        controller.GetScript();
+
+        Assert.Equal("no-cache", controller.Response.Headers.CacheControl.ToString());
+    }
 }

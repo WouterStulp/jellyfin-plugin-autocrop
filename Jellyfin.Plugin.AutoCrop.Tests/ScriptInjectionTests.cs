@@ -11,6 +11,12 @@ public class ScriptInjectionTests
     }
 
     [Fact]
+    public void Tag_CarriesThePluginVersion_SoUpdatesBypassTheBrowserCache()
+    {
+        Assert.Contains($"autocrop.js?v={typeof(PlayerScript).Assembly.GetName().Version}\"", PlayerScript.Tag);
+    }
+
+    [Fact]
     public void Inject_AlreadyPresentOrNotHtml_ReturnsInputUnchanged()
     {
         var injected = PlayerScript.Inject(Page);
