@@ -155,6 +155,15 @@
             : '';
     }
 
+    /**
+     * The CSS transition for a new transform. A scene switch animates, also from and to the full
+     * frame. The first transform of an item (playback or its data just started) jumps, as does a seek
+     * and turning the crop off (transitionMs 0).
+     */
+    function transitionCss(transitionMs, seeking, settled) {
+        return transitionMs > 0 && !seeking && settled ? 'transform ' + transitionMs + 'ms ease-in-out' : '';
+    }
+
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
             computeTransform: computeTransform,
@@ -163,6 +172,7 @@
             canvasTransform: canvasTransform,
             nextMode: nextMode,
             transformCss: transformCss,
+            transitionCss: transitionCss,
             isAspectSheet: isAspectSheet,
             enabledMode: enabledMode,
             effectiveMode: effectiveMode,
@@ -182,6 +192,7 @@
         enabled: true,
         seriesModes: {},
         seeking: false,
+        settled: false,
         boundaryTimer: null,
         css: '',
         range: null,
@@ -235,6 +246,7 @@
             if (state.source === source) {
                 state.itemId = itemId;
                 state.data = data;
+                state.settled = false;
                 refresh();
             }
         });
@@ -339,11 +351,12 @@
                 canvas.style.height = height;
             }
 
-            // Compared with what was set, not read back: browsers rewrite transform strings.
+            // Compared with what was set, not read back: browsers rewrite transform strings. The video's
+            // transition comes along, so the canvas eases back to the full frame with it.
             var transform = canvasTransform(canvas.className, state.css, state.data && state.data.zoomStyledSubtitles);
             if ((canvas.autocropTransform || '') !== transform) {
                 canvas.autocropTransform = transform;
-                canvas.style.transition = transform ? video.style.transition : '';
+                canvas.style.transition = video.style.transition;
                 canvas.style.transformOrigin = transform ? '50% 50%' : '';
                 canvas.style.transform = transform;
             }
@@ -366,6 +379,9 @@
 
     function apply(video, transform, transitionMs) {
         var css = transformCss(transform);
+        // Settled once a transform with data was applied; a transform without (off, another item) starts over.
+        var transition = transitionCss(transitionMs, state.seeking, state.settled);
+        state.settled = transitionMs > 0;
         if (css === state.css) {
             if (css) {
                 placeCanvases(video);
@@ -373,13 +389,12 @@
             return;
         }
 
-        // Animate only between two zoom levels during playback; jump when seeking, starting or stopping.
-        var animate = transitionMs > 0 && !state.seeking && state.css && css;
-        video.style.transition = animate ? 'transform ' + transitionMs + 'ms ease-in-out' : '';
+        video.style.transition = transition;
         video.style.transformOrigin = css ? '50% 50%' : '';
         video.style.transform = css;
         if (video.parentNode) {
-            video.parentNode.style.overflow = css ? 'hidden' : '';
+            // Stays hidden while the picture eases back to the full frame.
+            video.parentNode.style.overflow = css || transition ? 'hidden' : '';
         }
 
         state.css = css;
@@ -462,6 +477,12 @@
         video.addEventListener('seeked', function () {
             refresh();
             state.seeking = false;
+        });
+        // The container stays clipped while the picture eases back to the full frame.
+        video.addEventListener('transitionend', function () {
+            if (!state.css && video.parentNode) {
+                video.parentNode.style.overflow = '';
+            }
         });
         // The player can change size without the window doing so.
         if (window.ResizeObserver) {

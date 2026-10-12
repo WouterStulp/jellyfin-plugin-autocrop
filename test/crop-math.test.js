@@ -134,6 +134,13 @@ var tests = {
         assert.strictEqual(crop.canvasTransform('libassjs-canvas-parent', css, true), '', 'only the canvas itself');
     },
 
+    'a scene switch animates, also to and from the full frame; the first transform, a seek and off jump': function () {
+        assert.strictEqual(crop.transitionCss(300, false, true), 'transform 300ms ease-in-out', 'between two scenes');
+        assert.strictEqual(crop.transitionCss(300, false, false), '', 'first transform of an item');
+        assert.strictEqual(crop.transitionCss(300, true, true), '', 'seeking');
+        assert.strictEqual(crop.transitionCss(0, false, true), '', 'turned off, or transition set to 0');
+    },
+
     'the c key cycles per-scene, static, off': function () {
         assert.strictEqual(crop.nextMode('per-scene'), 'static');
         assert.strictEqual(crop.nextMode('static'), 'off');
