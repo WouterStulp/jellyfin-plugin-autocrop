@@ -61,12 +61,27 @@ From those keyframes the plugin builds:
   - First the file's real picture shapes, its mattes. A matte is a letterbox (full width, equal bars top and bottom) or a pillarbox (full height, equal bars left and right) that recurs: keyframes within 0.5% of the frame size of each other form a cluster, and a cluster counts when it holds at least 5% of the keyframes and at least 20 of them, with an aspect between 1.30 and 2.80. Its box is the union of the cluster. The whole-file crop is always a matte too, the widest one. An IMAX film has two (2.39:1 and the full frame), almost everything else one.
   - Each keyframe gets the smallest matte that fully contains its bounds. Dark shots, title cards and credits give smaller, scattered bounds inside the real picture, so they land in their scene's matte instead of becoming a shape of their own. A keyframe that pokes out of every other matte gets the whole-file crop.
   - Consecutive keyframes with the same matte form one segment. Fully black keyframes, such as fades, belong to their neighbours.
-  - The time between the last keyframe of one shape and the first of the next gets the union of both, so the switch to a larger picture always happens early enough.
+  - The time between the last keyframe of one shape and the first of the next gets the union of both, so the switch to a larger picture always happens early enough. With the frames around the switch decoded (see below), that stretch is one frame long.
   - Segments shorter than the minimum length are merged into the neighbour that loses the least zoom, always taking the larger box. A brief full-frame shot widens the crop instead of being cut.
   - Every segment's box contains every keyframe inside it. The tests check this on keyframes measured from ten real films and episodes.
   - A file with more than 200 segments falls back to the whole-file crop.
 
 Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
+
+## Switches timed to the frame
+
+Keyframes are seconds apart (3 s on average in a 4K film, up to 10 s and more), so from the keyframes alone a switch is only known to lie somewhere between the last keyframe of one shape and the first of the next. Zooming out that early shows bars for those seconds, in the middle of a shot. So after the keyframe analysis, for a file with more than one matte, every such gap is decoded in full:
+
+```
+ffmpeg -hide_banner -nostats -nostdin [GPU decoding] -ss <last keyframe> -i <file> -t <gap + 0.1> -map 0:V:0 \
+       -vf cropdetect=limit=0.094:round=2:reset=1:skip=0 -an -sn -dn -f null -
+```
+
+ffmpeg seeks straight to that keyframe and decodes only the gap, one process per switch, at idle priority like the scan itself. Oppenheimer has about 250 switches and 21 minutes of gaps in all; on a GPU that is a few minutes, on a CPU 15 to 30. The frames are measured with the same cropdetect, their times are offset by the seek position, and the first and last frame of every run of equal bounds is kept (`refined` in the samples file, a few frames per switch). Fully black frames are dropped.
+
+The analysis then runs again with those frames in the timeline: the runs now end and begin on the frames of the cut, so a switch lands on it, zooming out on the last narrow frame and zooming in on the first. The mattes are still found from the keyframes alone, so a few hundred decoded frames can't make or tip a matte; they only widen the whole-file union when a frame pokes out of it. A gap over 120 s isn't decoded (files that sparse are measured every 2 seconds anyway), and a file with more than 500 switches keeps its switches on the keyframes: one ffmpeg per switch would take longer than the scan.
+
+A result records whether the pass ran (`refined`). Results from before it get it once: at startup, or when the task runs, every per-scene result is queued for the pass only, keeping its keyframes; a file without switches is marked done without ffmpeg. A GPU that can't decode the file falls back to the CPU for the rest of the switches; a switch whose ffmpeg fails stays on its keyframes.
 
 ## Standard aspect ratios
 
@@ -84,12 +99,12 @@ A measurement is **suspicious** when no standard ratio lies within 1.5% of it, i
 
 On the ten real fixtures only Interstellar's 2.39:1 scenes change (1920×802 → 1920×804); the other crops already sit on a standard ratio or can't grow without leaving the frame.
 
-Results are stored per item (path, file size and modification time, frame size, sample aspect ratio, crop, segments, scan time, analysis version, source, the suspicious reason, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+Results are stored per item (path, file size and modification time, frame size, sample aspect ratio, crop, segments, scan time, analysis version, source, the suspicious reason, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film, with the frames decoded around each switch as rows of their own. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
 
 The keyframes make the analysis cheap to redo:
 
 - **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg. Results settled by trickplay are checked against the same rule again; one that no longer passes is dropped and queued for the keyframe scan.
-- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection).
+- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection). Results whose switches haven't been timed to the frame are queued for that pass only.
 - Keyframes are deleted together with the result when an item leaves the library.
 
 ## When scans run

@@ -22,8 +22,9 @@ public class CropAnalyzerTests
         return list;
     }
 
-    private static IReadOnlyList<CropSegment> Segments(IReadOnlyList<KeyframeSample> samples, double duration, AnalyzerOptions? options = null)
-        => CropAnalyzer.Segments(samples, W, H, duration, options ?? Options);
+    private static IReadOnlyList<CropSegment> Segments(
+        IReadOnlyList<KeyframeSample> samples, double duration, AnalyzerOptions? options = null, IReadOnlyList<KeyframeSample>? refined = null)
+        => CropAnalyzer.Segments(samples, W, H, duration, options ?? Options, refined);
 
     // ----- trickplay thumbnails -----
 
@@ -181,6 +182,79 @@ public class CropAnalyzerTests
         Assert.Equal(900, segments[1].End);
         Assert.Equal(598, segments[0].End);
         Assert.Equal(900, segments[2].Start);
+    }
+
+    [Fact]
+    public void Segments_FramesDecodedAroundASwitch_PutItOnTheCut()
+    {
+        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
+        var refined = new[]
+        {
+            K(598.958, Scope), K(599.0, Scope), K(599.042, Imax), K(599.958, Imax),
+            K(898.0, Imax), K(899.5, Imax), K(899.542, Scope), K(899.958, Scope),
+        };
+
+        var segments = Segments(samples, 1500, refined: refined);
+
+        // Zooming out starts on the last narrow frame, zooming in on the first narrow frame.
+        Assert.Equal(3, segments.Count);
+        Assert.Equal(599.0, segments[0].End);
+        Assert.Equal(599.0, segments[1].Start);
+        Assert.Equal(Imax, segments[1].Box);
+        Assert.Equal(899.542, segments[1].End);
+        Assert.Equal(899.542, segments[2].Start);
+    }
+
+    [Fact]
+    public void Segments_DecodedFrames_WidenTheUnionButNeverMakeAMatte()
+    {
+        var pillarbox = new CropBox(240, 0, 1440, 1080);
+        var keyframes = Every2s(0, 300, Full).Concat(Every2s(310, 600, Full)).ToList();
+        var frames = Enumerable.Range(0, 60).Select(i => K(302 + i * 0.1, pillarbox)).ToList();
+
+        // As keyframes, 60 recurring 4:3 frames are a matte of their own; decoded around a switch they aren't.
+        Assert.Contains(Segments(keyframes.Concat(frames).ToList(), 600), s => s.Box == pillarbox);
+        Assert.Equal(Full, Assert.Single(Segments(keyframes, 600, refined: frames)).Box);
+
+        var wider = Enumerable.Range(0, 3).Select(i => K(300 + i * 0.042, new CropBox(0, 0, 1920, 1080))).ToList();
+        var scope = Segments(Every2s(0, 600, Scope), 600, refined: wider);
+        Assert.Contains(scope, s => s.Box == Full);
+    }
+
+    [Fact]
+    public void SwitchWindows_AreTheGapsBetweenRunsOfDifferentMattes()
+    {
+        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
+
+        var windows = CropAnalyzer.SwitchWindows(samples, W, H, Options);
+
+        Assert.Equal(new[] { (598.0, 600.0), (898.0, 900.0) }, windows);
+        Assert.Empty(CropAnalyzer.SwitchWindows(Every2s(0, 600, Scope), W, H, Options));
+        Assert.Empty(CropAnalyzer.SwitchWindows(Array.Empty<KeyframeSample>(), W, H, Options));
+    }
+
+    [Fact]
+    public void SwitchWindows_SkipGapsTooLongToDecode()
+    {
+        var samples = Every2s(0, 100, Scope).Concat(Every2s(300, 400, Imax)).Concat(Every2s(401, 500, Scope)).ToList();
+
+        var windows = CropAnalyzer.SwitchWindows(samples, W, H, Options);
+
+        Assert.Equal((398.0, 401.0), Assert.Single(windows));
+    }
+
+    [Fact]
+    public void Compact_KeepsTheEndsOfEveryRunOfEqualBoxes()
+    {
+        var a = new CropBox(0, 138, 1920, 804);
+        var b = new CropBox(0, 35, 1920, 1010);
+        var frames = new[] { K(0, a), K(1, a), K(2, a), K(3, b), K(4, b), K(5, null), K(6, Full) };
+
+        var kept = CropAnalyzer.Compact(frames);
+
+        Assert.Equal(new[] { 0.0, 2, 3, 4, 6 }, kept.Select(f => f.Time));
+        Assert.Empty(CropAnalyzer.Compact(new[] { K(0, null) }));
+        Assert.Single(CropAnalyzer.Compact(new[] { K(0, a) }));
     }
 
     [Fact]

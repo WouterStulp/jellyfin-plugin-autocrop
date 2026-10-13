@@ -153,11 +153,11 @@ public class AutoCropController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult Reanalyse()
     {
-        var (reanalysed, withoutSamples) = _scanner.Reanalyse(outdatedOnly: false);
-        foreach (var itemId in withoutSamples)
+        var (reanalysed, needScan) = _scanner.Reanalyse(outdatedOnly: false);
+        foreach (var itemId in needScan)
             _queue.Enqueue(itemId, settle: false);
 
-        return Ok(new { reanalysed, rescanning = withoutSamples.Count });
+        return Ok(new { reanalysed, rescanning = needScan.Count });
     }
 
     [HttpGet("Stats")]

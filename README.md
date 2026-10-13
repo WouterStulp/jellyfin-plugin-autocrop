@@ -11,7 +11,7 @@ Some files store their black bars inside the video: a widescreen film saved as a
 ## Features
 
 - **Exact.** Every file is measured, so nothing is guessed and no picture is ever cut off.
-- **Follows IMAX scenes.** Films that switch between widescreen and taller IMAX scenes are followed scene by scene.
+- **Follows IMAX scenes.** Films that switch between widescreen and taller IMAX scenes are followed scene by scene, with every switch timed to the frame of the cut.
 - **Only zooms when it helps.** On a normal 16:9 screen nothing changes.
 - **Works in the background.** New films and episodes are measured automatically, usually in about a second.
 - **Dashboard** with everything it found, plus settings.

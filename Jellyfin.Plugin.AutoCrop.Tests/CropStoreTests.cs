@@ -171,9 +171,25 @@ public class CropStoreTests : IDisposable
         Assert.Equal(3012.48, loaded.Value.DurationSeconds);
         Assert.Equal(samples, loaded.Value.Samples);
         Assert.Null(loaded.Value.ThumbnailSize);
+        Assert.Null(loaded.Value.Refined);
         Assert.True(File.Exists(Path.Combine(_dir, "data", "samples", id.ToString("N") + ".json.gz")));
         Assert.False(File.Exists(_storePath));
         Assert.Null(store.GetSamples(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void Samples_KeepTheFramesDecodedAroundSwitchesBesideTheKeyframes()
+    {
+        var store = NewStore();
+        var id = Guid.NewGuid();
+        var keyframes = new List<KeyframeSample> { new(0, new CropBox(0, 60, 1920, 960)), new(2, new CropBox(0, 0, 1920, 1080)) };
+        var refined = new List<KeyframeSample> { new(0.958, new CropBox(0, 60, 1920, 960)), new(1.0, new CropBox(0, 0, 1920, 1080)) };
+
+        store.SetSamples(id, 10, keyframes, refined: refined);
+        var loaded = NewStore().GetSamples(id)!.Value;
+
+        Assert.Equal(keyframes, loaded.Samples);
+        Assert.Equal(refined, loaded.Refined);
     }
 
     [Fact]
