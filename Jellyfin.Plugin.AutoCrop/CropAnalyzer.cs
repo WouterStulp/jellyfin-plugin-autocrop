@@ -20,10 +20,16 @@ public static class CropAnalyzer
     /// <summary>
     /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 4;
 
     /// <summary>Fewer trickplay thumbnails with picture than this prove nothing.</summary>
     internal const int MinimumThumbnails = 20;
+
+    /// <summary>
+    /// A switch between two keyframes further apart than this isn't timed to the frame: decoding that
+    /// much to place one switch isn't worth it, and files that sparse are measured every 2 seconds anyway.
+    /// </summary>
+    internal const double MaxWindowSeconds = 120;
 
     /// <summary>Display aspect ratios that films and series are made in.</summary>
     internal static readonly double[] StandardRatios =
@@ -147,29 +153,30 @@ public static class CropAnalyzer
     /// matte of its scene instead of becoming a picture shape of its own. Consecutive keyframes with
     /// the same matte form a run; the stretch between two runs, where the real change happened
     /// somewhere between two keyframes, gets the union of both. Segments shorter than the minimum
-    /// are absorbed into a neighbour by union.
+    /// are absorbed into a neighbour by union. <paramref name="refined"/> holds the frames decoded
+    /// around each switch (see <see cref="SwitchWindows"/>): they take part in the timeline, so a
+    /// switch lands on the frame of the cut, but not in finding the mattes, which stay a keyframe statistic.
     /// </summary>
     public static IReadOnlyList<CropSegment> Segments(
-        IReadOnlyList<KeyframeSample> samples, int frameWidth, int frameHeight, double durationSeconds, AnalyzerOptions options)
+        IReadOnlyList<KeyframeSample> samples,
+        int frameWidth,
+        int frameHeight,
+        double durationSeconds,
+        AnalyzerOptions options,
+        IReadOnlyList<KeyframeSample>? refined = null)
     {
-        var end = Math.Max(durationSeconds, samples.Count > 0 ? samples.Max(s => s.Time) : 0);
-        var picture = samples.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
+        var all = refined == null ? samples : samples.Concat(refined).ToList();
+        var end = Math.Max(durationSeconds, all.Count > 0 ? all.Max(s => s.Time) : 0);
+        var picture = all.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
         if (picture.Count == 0)
             return new[] { new CropSegment(0, end, CropBox.Full(frameWidth, frameHeight)) };
 
-        var toleranceX = Math.Max(4, frameWidth / 200);
-        var toleranceY = Math.Max(4, frameHeight / 200);
-        var mattes = Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options);
-
-        var runs = new List<(double First, double Last, CropBox Box)>();
-        foreach (var sample in picture)
-        {
-            var matte = mattes.First(m => m.Contains(sample.Box!));
-            if (runs.Count > 0 && runs[^1].Box == matte)
-                runs[^1] = (runs[^1].First, sample.Time, matte);
-            else
-                runs.Add((sample.Time, sample.Time, matte));
-        }
+        var (toleranceX, toleranceY) = Tolerance(frameWidth, frameHeight);
+        var keyframeBoxes = samples.Select(s => s.Box).OfType<CropBox>().ToList();
+        var mattes = keyframeBoxes.Count == 0
+            ? Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options)
+            : Mattes(keyframeBoxes, toleranceX, toleranceY, options, refined?.Select(s => s.Box).OfType<CropBox>());
+        var runs = Runs(picture, mattes);
 
         var segments = new List<CropSegment>();
         for (var i = 0; i < runs.Count; i++)
@@ -198,15 +205,79 @@ public static class CropAnalyzer
     }
 
     /// <summary>
+    /// The stretches where the picture shape changes somewhere between two keyframes: from the last
+    /// keyframe of one matte to the first of the next, in order. Decoding every frame in them puts
+    /// each switch on the frame of the cut. Gaps over <see cref="MaxWindowSeconds"/> are left out.
+    /// </summary>
+    public static IReadOnlyList<(double Start, double End)> SwitchWindows(
+        IReadOnlyList<KeyframeSample> samples, int frameWidth, int frameHeight, AnalyzerOptions options)
+    {
+        var picture = samples.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
+        if (picture.Count == 0)
+            return Array.Empty<(double, double)>();
+
+        var (toleranceX, toleranceY) = Tolerance(frameWidth, frameHeight);
+        var runs = Runs(picture, Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options));
+        var windows = new List<(double Start, double End)>();
+        for (var i = 1; i < runs.Count; i++)
+        {
+            var gap = runs[i].First - runs[i - 1].Last;
+            if (gap > 0 && gap <= MaxWindowSeconds)
+                windows.Add((runs[i - 1].Last, runs[i].First));
+        }
+
+        return windows;
+    }
+
+    /// <summary>
+    /// The frames of a decoded switch window worth keeping: the first and last of every run of equal
+    /// boxes, so each run's extent is kept exactly, and nothing in between. Fully black frames are dropped.
+    /// </summary>
+    public static IReadOnlyList<KeyframeSample> Compact(IEnumerable<KeyframeSample> frames)
+    {
+        var picture = frames.Where(f => f.Box != null).ToList();
+        var kept = new List<KeyframeSample>();
+        for (var i = 0; i < picture.Count; i++)
+        {
+            if (i == 0 || i == picture.Count - 1 || picture[i].Box != picture[i - 1].Box || picture[i].Box != picture[i + 1].Box)
+                kept.Add(picture[i]);
+        }
+
+        return kept;
+    }
+
+    // Half a percent of the frame: boxes closer than this are the same shape.
+    private static (int X, int Y) Tolerance(int frameWidth, int frameHeight)
+        => (Math.Max(4, frameWidth / 200), Math.Max(4, frameHeight / 200));
+
+    // Consecutive samples (in time order) with the same matte, the smallest one containing each box.
+    private static List<(double First, double Last, CropBox Box)> Runs(IReadOnlyList<KeyframeSample> picture, IReadOnlyList<CropBox> mattes)
+    {
+        var runs = new List<(double First, double Last, CropBox Box)>();
+        foreach (var sample in picture)
+        {
+            var matte = mattes.First(m => m.Contains(sample.Box!));
+            if (runs.Count > 0 && runs[^1].Box == matte)
+                runs[^1] = (runs[^1].First, sample.Time, matte);
+            else
+                runs.Add((sample.Time, sample.Time, matte));
+        }
+
+        return runs;
+    }
+
+    /// <summary>
     /// The picture shapes the file really uses, smallest first. Always the whole-file union, plus
     /// every letterbox (full width, equal bars top and bottom) or pillarbox (full height, equal bars
     /// left and right) that recurs in enough keyframes. Dark shots and credits give scattered,
     /// asymmetric boxes that never recur often enough to count. Each matte is the union of its
-    /// cluster, so it never cuts picture any of its keyframes showed.
+    /// cluster, so it never cuts picture any of its keyframes showed. <paramref name="extra"/> boxes
+    /// (frames decoded around switches) only widen the whole-file union; they don't form or count for mattes.
     /// </summary>
-    internal static IReadOnlyList<CropBox> Mattes(IReadOnlyList<CropBox> boxes, int toleranceX, int toleranceY, AnalyzerOptions options)
+    internal static IReadOnlyList<CropBox> Mattes(
+        IReadOnlyList<CropBox> boxes, int toleranceX, int toleranceY, AnalyzerOptions options, IEnumerable<CropBox>? extra = null)
     {
-        var union = boxes.Aggregate((a, b) => a.Union(b));
+        var union = boxes.Concat(extra ?? Enumerable.Empty<CropBox>()).Aggregate((a, b) => a.Union(b));
         var mattes = new List<CropBox> { union };
         var needed = Math.Max(options.MinimumMatteKeyframes, options.MinimumMatteShare * boxes.Count);
 

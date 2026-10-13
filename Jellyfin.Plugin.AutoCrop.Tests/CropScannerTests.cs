@@ -55,6 +55,20 @@ public class CropScannerTests : IDisposable
     }
 
     [Fact]
+    public void RefineArguments_SeekToTheSwitchAndDecodeEveryFrame()
+    {
+        var args = CropScanner.RefineArguments("/media/film.mkv", new[] { "-hwaccel", "vaapi" }, 166.099, 176.0).ToList();
+
+        Assert.DoesNotContain("-skip_frame", args);
+        Assert.True(args.IndexOf("-hwaccel") < args.IndexOf("-ss"), "hardware decoding is an input option");
+        Assert.Equal("166.099", args[args.IndexOf("-ss") + 1]);
+        Assert.True(args.IndexOf("-ss") < args.IndexOf("-i"), "seek before the input, so ffmpeg jumps to the keyframe");
+        Assert.True(args.IndexOf("-i") < args.IndexOf("-t"), "the duration limits the output");
+        Assert.Equal("10.001", args[args.IndexOf("-t") + 1]);
+        Assert.Contains("cropdetect=limit=0.094:round=2:reset=1:skip=0", args[args.IndexOf("-vf") + 1]);
+    }
+
+    [Fact]
     public void HardwareDecoding_FollowsJellyfinsAcceleration()
     {
         Assert.Null(CropScanner.HardwareDecodingArguments(null));
@@ -264,6 +278,28 @@ public class CropScannerTests : IDisposable
     }
 
     [Fact]
+    public void Reanalyse_ResultWithUntimedSwitches_IsQueuedForTheTimingPassOnly()
+    {
+        var store = Store();
+        var scanner = Scanner(store);
+        var (movie, _) = OutdatedResult(store);
+        var scope = new CropBox(0, 138, 1920, 804);
+        var imax = new CropBox(0, 35, 1920, 1010);
+        store.SetSamples(movie.Id, 120, Enumerable.Range(0, 60).Select(i => new KeyframeSample(i * 2, i < 30 ? scope : imax)).ToList());
+
+        var (reanalysed, needScan) = scanner.Reanalyse(outdatedOnly: true);
+
+        // Recomputed from its keyframes, and queued once more for the pass that times the switch.
+        Assert.Equal(1, reanalysed);
+        Assert.Equal(movie.Id, Assert.Single(needScan));
+        var result = store.Get(movie.Id)!;
+        Assert.Equal(CropAnalyzer.Version, result.AnalysisVersion);
+        Assert.Equal(2, result.Segments!.Count);
+        Assert.False(result.Refined);
+        Assert.True(scanner.NeedsScan(movie));
+    }
+
+    [Fact]
     public void Reanalyse_CurrentResults_OnlyWhenAskedForAll()
     {
         var store = Store();
@@ -329,17 +365,55 @@ public class CropScannerTests : IDisposable
         Skip.If(ffmpeg == null, "ffmpeg not found");
 
         // 2.39:1 (640x268), 1.90:1 (640x336) and 2.39:1 again, 40 s each: longer than the 30 s minimum.
-        var result = await Scan(ffmpeg!, MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (40, 268), (40, 336), (40, 268)));
+        var movie = MovieAt(MakeClip(ffmpeg!, "imax.mp4", "yuv420p", (40, 268), (40, 336), (40, 268)));
+        var result = await Scan(ffmpeg!, movie);
 
         var segments = result.Segments!;
         Assert.Equal(3, segments.Count);
         AssertBox(new CropBox(0, 46, 640, 268), segments[0].Box);
         AssertBox(new CropBox(0, 12, 640, 336), segments[1].Box);
         AssertBox(new CropBox(0, 46, 640, 268), segments[2].Box);
-        Assert.Equal(39, segments[1].Start, 1);
-        Assert.Equal(80, segments[1].End, 1);
-        Assert.Equal(120, segments[2].End, 1);
         AssertBox(new CropBox(0, 12, 640, 336), result.Crop);
+
+        // The cuts are at 40 s and 80 s, between keyframes (one per second). The frames around them
+        // were decoded, so the switches sit on the cut: the zoom-out one frame (1/24 s) before it, the
+        // zoom-in on the first narrow frame.
+        Assert.True(result.Refined);
+        Assert.InRange(segments[1].Start, 39.95, 40.0);
+        Assert.Equal(80, segments[1].End, 2);
+        Assert.Equal(120, segments[2].End, 1);
+        var stored = Store().GetSamples(movie.Id)!.Value;
+        Assert.NotNull(stored.Refined);
+        Assert.InRange(stored.Refined.Count, 4, 60);
+        Assert.Equal(result.Keyframes, stored.Samples.Count);
+    }
+
+    [SkippableFact]
+    public async Task EndToEnd_ResultWithUntimedSwitches_GetsOnlyTheTimingPass()
+    {
+        var ffmpeg = Ffmpeg();
+        Skip.If(ffmpeg == null, "ffmpeg not found");
+        var store = Store();
+        var scanner = Scanner(store, ffmpeg);
+        var movie = MovieAt(MakeClip(ffmpeg!, "untimed.mp4", "yuv420p", (40, 268), (40, 336), (40, 268)));
+        var scanned = await scanner.ScanAsync(movie, CancellationToken.None);
+
+        // As a result from before the pass existed: keyframes stored, switches on them, not refined.
+        var old = scanned.Copy();
+        old.Refined = false;
+        store.Set(old);
+        var keyframes = store.GetSamples(movie.Id)!.Value;
+        store.SetSamples(movie.Id, keyframes.DurationSeconds, keyframes.Samples);
+        Assert.True(scanner.NeedsScan(movie));
+
+        var result = await scanner.ScanAsync(movie, CancellationToken.None);
+
+        Assert.True(result.Refined);
+        Assert.Equal(scanned.Keyframes, result.Keyframes);
+        Assert.InRange(result.Segments![1].Start, 39.95, 40.0);
+        Assert.Equal(80, result.Segments[1].End, 2);
+        Assert.NotNull(store.GetSamples(movie.Id)!.Value.Refined);
+        Assert.False(scanner.NeedsScan(movie));
     }
 
     [SkippableFact]
@@ -517,6 +591,7 @@ public class CropScannerTests : IDisposable
         var store = Store();
         var (movie, result) = OutdatedResult(store);
         result.AnalysisVersion = CropAnalyzer.Version;
+        result.Refined = true;
 
         // The scanner's ffmpeg doesn't exist: running it would record a failure instead.
         Assert.Same(result, await Scanner(store).ScanAsync(movie, CancellationToken.None));

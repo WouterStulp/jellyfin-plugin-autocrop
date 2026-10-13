@@ -46,6 +46,12 @@ public sealed class CropResult
     public double? PixelAspect { get; set; }
 
     /// <summary>
+    /// Whether the frames around each shape switch were decoded, so the switches sit on the frame of
+    /// the cut (or the file has no switches). False for results from before, which get that pass once.
+    /// </summary>
+    public bool Refined { get; set; }
+
+    /// <summary>
     /// Why the measured picture can't be a real one (no standard aspect ratio, implausible ratio, under
     /// half the frame); then Crop is the full frame. Null otherwise.
     /// </summary>
