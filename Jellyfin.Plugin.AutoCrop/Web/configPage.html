@@ -14,7 +14,7 @@
                     --ac-border: rgba(255,255,255,.085); --ac-border-strong: rgba(255,255,255,.16);
                     --ac-text: #edeff5; --ac-muted: #9aa1b5; --ac-faint: #8b93a5;
                     --ac-primary: #5fb8d9; --ac-primary-soft: rgba(95,184,217,.15);
-                    --ac-ok: #5fc9a8; --ac-warn: #e8a23c; --ac-crit: #e0714f; --ac-scene: #a78bfa;
+                    --ac-ok: #5fc9a8; --ac-warn: #e8a23c; --ac-crit: #e0714f; --ac-accent: #a78bfa;
                     --ac-shadow: 0 8px 30px -14px rgba(0,0,0,.55);
                     --ac-mono: ui-monospace,"SF Mono","Cascadia Code",Menlo,monospace;
                     --ac-r: 12px;
@@ -25,7 +25,7 @@
                 .ac-app .ac { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; background: var(--ac-bg); }
                 .ac-app .ac-rail { border-right: 1px solid var(--ac-border); background: var(--ac-surface); padding: 22px 16px; }
                 .ac-app .ac-brand { display: flex; align-items: center; gap: 10px; padding: 2px 6px 18px; }
-                .ac-app .ac-glyph { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: linear-gradient(150deg, var(--ac-primary), var(--ac-scene)); }
+                .ac-app .ac-glyph { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; flex: none; background: linear-gradient(150deg, var(--ac-primary), var(--ac-accent)); }
                 .ac-app .ac-brand b { font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
                 .ac-app .ac-brand small { display: block; font-size: 11px; color: var(--ac-faint); }
                 .ac-app .ac-nav { display: flex; flex-direction: column; gap: 2px; }
@@ -67,14 +67,11 @@
                 .ac-app .ac-dim { color: var(--ac-faint); }
                 .ac-app .ac-pill { font-family: var(--ac-mono); font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 20px; white-space: nowrap; }
                 .ac-app .ac-pill.bars { color: var(--ac-primary); background: var(--ac-primary-soft); }
-                .ac-app .ac-pill.per-scene { color: var(--ac-scene); background: rgba(167,139,250,.14); }
                 .ac-app .ac-pill.no-bars { color: var(--ac-muted); background: var(--ac-surface-2); }
                 .ac-app .ac-pill.suspicious { color: var(--ac-warn); background: rgba(232,162,60,.14); cursor: help; }
                 .ac-app .ac-pill.failed { color: var(--ac-crit); background: rgba(224,113,79,.14); cursor: help; }
                 .ac-app .ac-pill.queued { color: var(--ac-warn); background: rgba(232,162,60,.14); }
                 .ac-app .ac-tag { font-family: var(--ac-mono); font-size: 10px; color: var(--ac-faint); border: 1px solid var(--ac-border-strong); padding: 0 5px; border-radius: 4px; margin-left: 6px; }
-                .ac-app .ac-timeline { display: flex; width: 160px; height: 14px; border-radius: 3px; overflow: hidden; background: var(--ac-surface-2); margin-top: 4px; }
-                .ac-app .ac-timeline span { height: 100%; border-right: 1px solid var(--ac-surface); box-sizing: border-box; }
                 .ac-app .ac-pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 10px 14px; font-size: 12.5px; color: var(--ac-muted); }
                 .ac-app .ac-empty { padding: 2.5em; text-align: center; color: var(--ac-muted); }
                 .ac-app .ac-form { max-width: 560px; display: flex; flex-direction: column; gap: 18px; padding: 20px; }
@@ -110,7 +107,6 @@
                             <div class="ac-tiles">
                                 <div class="ac-tile"><div class="n" id="acScanned">&ndash;</div><div class="ac-label">Scanned</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-primary);"><div class="n" id="acWithBars">&ndash;</div><div class="ac-label">With bars</div></div>
-                                <div class="ac-tile" style="--c: var(--ac-scene);"><div class="n" id="acPerScene">&ndash;</div><div class="ac-label">Per-scene</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-ok);" title="No bars in Jellyfin's trickplay thumbnails, so the file wasn't decoded"><div class="n" id="acByTrickplay">&ndash;</div><div class="ac-label">By trickplay</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-warn);" title="The measured picture has no standard aspect ratio or is under half the frame, so nothing is cropped"><div class="n" id="acSuspicious">&ndash;</div><div class="ac-label">Suspicious</div></div>
                                 <div class="ac-tile" style="--c: var(--ac-warn);"><div class="n" id="acPending">&ndash;</div><div class="ac-label">Pending</div></div>
@@ -120,7 +116,6 @@
                             <div class="ac-tools" id="acFilters">
                                 <button type="button" class="ac-chip on" data-filter="">All</button>
                                 <button type="button" class="ac-chip" data-filter="bars">With bars</button>
-                                <button type="button" class="ac-chip" data-filter="per-scene">Per-scene</button>
                                 <button type="button" class="ac-chip" data-filter="no-bars">No bars</button>
                                 <button type="button" class="ac-chip" data-filter="suspicious">Suspicious</button>
                                 <button type="button" class="ac-chip" data-filter="failed">Failed</button>
@@ -130,8 +125,8 @@
 
                             <div class="ac-panel">
                                 <table class="ac-table">
-                                    <thead><tr><th>Title</th><th>Frame</th><th>Picture</th><th>Segments</th><th>Scanned</th><th>Status</th><th title="Overrides the series, library and server mode">Mode</th><th></th></tr></thead>
-                                    <tbody id="acRows"><tr><td colspan="8" class="ac-empty">Loading&hellip;</td></tr></tbody>
+                                    <thead><tr><th>Title</th><th>Frame</th><th title="The whole picture, and the theatre crop when it is narrower">Picture</th><th>Scanned</th><th>Status</th><th title="Overrides the series, library and server mode">Mode</th><th></th></tr></thead>
+                                    <tbody id="acRows"><tr><td colspan="7" class="ac-empty">Loading&hellip;</td></tr></tbody>
                                 </table>
                                 <div class="ac-pager"><span id="acPageInfo"></span><button type="button" class="ac-btn small" id="acPrev">Previous</button><button type="button" class="ac-btn small" id="acNext">Next</button></div>
                             </div>
@@ -143,28 +138,28 @@
                                 <label class="ac-check"><input type="checkbox" id="acEnabled" /><span>Enable AutoCrop<span class="desc" style="display:block;">Scans new items and crops playback in the web player.</span></span></label>
                                 <label class="ac-check"><input type="checkbox" id="acHardware" /><span>Decode on the GPU<span class="desc" style="display:block;">Uses the hardware acceleration set under Playback &gt; Transcoding to scan faster. Same result as the CPU, which takes over when the GPU can't decode a file.</span></span></label>
                                 <label class="ac-check"><input type="checkbox" id="acTrickplay" /><span>Use trickplay images to skip files without bars<span class="desc" style="display:block;">Checks Jellyfin's trickplay thumbnails first, which takes a second. Files whose thumbnails show picture edge to edge in every shape are settled without decoding them; everything else, and every crop, comes from the exact keyframe scan.</span></span></label>
-                                <label class="ac-field"><span class="ac-label">Default mode</span>
+                                <label class="ac-field"><span class="ac-label">Films</span>
                                     <select class="ac-input" id="acDefaultMode">
-                                        <option value="per-scene">Per scene: follow aspect-ratio changes (IMAX scenes)</option>
-                                        <option value="static">Static: one crop for the whole file</option>
+                                        <option value="theatre">Theatre crop: one crop, cut to the film's widescreen shape, as the cinema shows it</option>
+                                        <option value="whole">Whole picture: one crop that never cuts picture</option>
                                         <option value="off">Off</option>
                                     </select>
-                                    <span class="desc">Libraries can have their own mode below; series, films and episodes in the Overview (Mode column, Series filter).</span>
+                                    <span class="desc">A film that switches between widescreen and taller IMAX scenes keeps one crop either way: the theatre crop cuts the IMAX scenes down to the widescreen shape; the whole picture shows everything, with bars during the widescreen scenes.</span>
+                                </label>
+                                <label class="ac-field"><span class="ac-label">Series</span>
+                                    <select class="ac-input" id="acEpisodeDefaultMode">
+                                        <option value="theatre">Theatre crop</option>
+                                        <option value="whole">Whole picture</option>
+                                        <option value="off">Off</option>
+                                    </select>
+                                    <span class="desc">Whole by default: many series use black bars as an effect for a few scenes, and the theatre crop would cut the rest of the episode down to them. Bars present in every frame are cropped either way. Libraries can have their own mode below; series, films and episodes in the Overview (Mode column, Series filter).</span>
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Minimum bar (%)</span>
                                     <input class="ac-input" type="number" id="acMinBar" min="0" max="25" step="0.1" />
                                     <span class="desc">Bars thinner than this share of the width or height are left alone, so edge noise isn't cropped.</span>
                                 </label>
-                                <label class="ac-field"><span class="ac-label">Minimum segment length (s)</span>
-                                    <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
-                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
-                                </label>
                                 <label class="ac-check"><input type="checkbox" id="acZoomSubtitles" /><span>Zoom styled (ASS) subtitles with the picture<span class="desc" style="display:block;">Keeps signs and positioned text on their spot in the zoomed picture. Blu-ray (PGS) and DVD subtitles always stay on the whole frame, since they are often placed in the black bars.</span></span></label>
-                                <label class="ac-field"><span class="ac-label">Transition (ms)</span>
-                                    <input class="ac-input" type="number" id="acTransition" min="0" max="5000" step="50" />
-                                    <span class="desc">How long the zoom takes to follow a scene change; 0 switches instantly.</span>
-                                </label>
-                                <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Every scan keeps its keyframe measurements, so after changing the minimum bar or segment length, <b>Re-analyse all</b> applies them to every scanned item in seconds, without running ffmpeg again.</p>
+                                <p class="desc" style="margin:0;">The library scan runs daily at 02:00. Change the schedule under <a class="ac-link" href="#/dashboard/tasks">Scheduled tasks</a> (task &ldquo;Detect black bars&rdquo;). Every scan keeps its keyframe measurements, so after changing the minimum bar, <b>Re-analyse all</b> applies it to every scanned item in seconds, without running ffmpeg again.</p>
                                 <div><button type="submit" class="ac-btn primary">Save</button> <button type="button" class="ac-btn" id="acReanalyse">Re-analyse all</button> <span class="ac-status" id="acSaveStatus"></span></div>
                             </form>
                             <div class="ac-panel ac-form" style="margin-top:18px;">
@@ -198,12 +193,6 @@
                         return isNaN(d.getTime()) ? '' : pad(d.getDate()) + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getFullYear() % 100);
                     }
 
-                    function formatTime(seconds) {
-                        var s = Math.round(seconds);
-                        var h = Math.floor(s / 3600);
-                        return (h ? h + ':' + pad(Math.floor(s / 60) % 60) : Math.floor(s / 60)) + ':' + pad(s % 60);
-                    }
-
                     function ratio(box) {
                         return box && box.height ? (box.width / box.height).toFixed(2) + ':1' : '';
                     }
@@ -218,7 +207,6 @@
                         getJson('AutoCrop/Stats').then(function (s) {
                             $('acScanned').textContent = s.scanned;
                             $('acWithBars').textContent = s.withBars;
-                            $('acPerScene').textContent = s.perScene;
                             $('acByTrickplay').textContent = s.byTrickplay;
                             $('acSuspicious').textContent = s.suspicious;
                             $('acPending').textContent = s.pending + (s.queued ? ' (' + s.queued + ' queued)' : '');
@@ -226,21 +214,8 @@
                         }, function () {});
                     }
 
-                    // Each segment's width is its share of the running time; taller pictures are lighter.
-                    function timeline(row) {
-                        var segments = row.segments;
-                        if (!segments || segments.length < 2) return '';
-                        var total = segments[segments.length - 1].end || 1;
-                        return '<div class="ac-timeline">' + segments.map(function (s) {
-                            var share = Math.max(0.5, 100 * (s.end - s.start) / total);
-                            var light = Math.round(30 + 45 * s.box.height / row.frameHeight);
-                            var title = formatTime(s.start) + '\u2013' + formatTime(s.end) + ' \u00b7 ' + s.box.width + '\u00d7' + s.box.height + ' (' + ratio(s.box) + ')';
-                            return '<span style="width:' + share.toFixed(2) + '%;background:hsl(258,60%,' + light + '%);" title="' + esc(title) + '"></span>';
-                        }).join('') + '</div>';
-                    }
-
                     function statusPill(row) {
-                        var labels = { 'bars': 'Bars', 'per-scene': 'Per-scene', 'no-bars': 'No bars', 'suspicious': 'Suspicious', 'failed': 'Failed' };
+                        var labels = { 'bars': 'Bars', 'no-bars': 'No bars', 'suspicious': 'Suspicious', 'failed': 'Failed' };
                         var reason = row.status === 'failed' ? row.error : row.suspiciousReason;
                         var title = reason ? ' title="' + esc(reason) + '"' : '';
                         return '<span class="ac-pill ' + esc(row.status) + '"' + title + '>' + esc(labels[row.status] || row.status) + '</span>';
@@ -248,7 +223,7 @@
 
                     // Empty means inherit: the series', the library's or the server's mode.
                     function modeSelect(id, mode, inheritLabel) {
-                        var options = [['', inheritLabel], ['per-scene', 'Per scene'], ['static', 'Static'], ['off', 'Off']];
+                        var options = [['', inheritLabel], ['theatre', 'Theatre crop'], ['whole', 'Whole picture'], ['off', 'Off']];
                         return '<select class="ac-input ac-mode" aria-label="Mode" data-mode-for="' + esc(id) + '">' + options.map(function (o) {
                             return '<option value="' + o[0] + '"' + (o[0] === (mode || '') ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
                         }).join('') + '</select>';
@@ -257,7 +232,7 @@
                     function renderSeries(row) {
                         return '<tr>'
                             + '<td>' + esc(row.title) + '</td>'
-                            + '<td colspan="5" class="ac-dim">' + esc(row.episodes + ' episode' + (row.episodes === 1 ? '' : 's') + ' scanned \u00b7 ' + row.withBars + ' with bars') + '</td>'
+                            + '<td colspan="4" class="ac-dim">' + esc(row.episodes + ' episode' + (row.episodes === 1 ? '' : 's') + ' scanned \u00b7 ' + row.withBars + ' with bars') + '</td>'
                             + '<td>' + modeSelect(row.itemId, row.mode, 'Inherit') + '</td>'
                             + '<td></td>'
                             + '</tr>';
@@ -268,12 +243,14 @@
                         var failed = row.status === 'failed';
                         var picture = failed || !row.crop ? '<span class="ac-dim">\u2013</span>'
                             : esc(row.crop.width + '\u00d7' + row.crop.height) + ' <span class="ac-dim">\u00b7 ' + esc(ratio(row.crop)) + '</span>';
-                        var segments = failed ? '' : (row.segments ? row.segments.length : 1) + timeline(row);
+                        var theatre = row.theatreCrop;
+                        if (!failed && theatre && (theatre.width !== row.crop.width || theatre.height !== row.crop.height)) {
+                            picture += '<div class="ac-dim" style="font-size:11.5px;">theatre ' + esc(theatre.width + '\u00d7' + theatre.height + ' \u00b7 ' + ratio(theatre)) + '</div>';
+                        }
                         return '<tr>'
                             + '<td>' + esc(row.title) + (failed ? '<div class="ac-dim" style="font-size:11.5px;">' + esc(row.error) + '</div>' : '') + '</td>'
                             + '<td class="ac-mono">' + (failed ? '' : esc(row.frameWidth + '\u00d7' + row.frameHeight)) + '</td>'
                             + '<td class="ac-mono">' + picture + '</td>'
-                            + '<td class="ac-mono">' + segments + '</td>'
                             + '<td class="ac-mono">' + esc(formatDate(row.scannedAt)) + (row.source ? '<span class="ac-tag">' + esc(row.source) + '</span>' : '') + '</td>'
                             + '<td>' + statusPill(row) + '</td>'
                             + '<td>' + modeSelect(row.itemId, row.mode, 'Inherit') + '</td>'
@@ -286,13 +263,13 @@
                             state.total = page.total;
                             $('acRows').innerHTML = page.items.length
                                 ? page.items.map(renderRow).join('')
-                                : '<tr><td colspan="8" class="ac-empty">Nothing here yet. Scans run nightly, or use \u201cScan library now\u201d.</td></tr>';
+                                : '<tr><td colspan="7" class="ac-empty">Nothing here yet. Scans run nightly, or use \u201cScan library now\u201d.</td></tr>';
                             var last = Math.min(state.start + PAGE_SIZE, page.total);
                             $('acPageInfo').textContent = page.total ? (state.start + 1) + '\u2013' + last + ' of ' + page.total : '';
                             $('acPrev').disabled = state.start === 0;
                             $('acNext').disabled = last >= page.total;
                         }, function () {
-                            $('acRows').innerHTML = '<tr><td colspan="8" class="ac-empty">Couldn\u2019t load the scan results.</td></tr>';
+                            $('acRows').innerHTML = '<tr><td colspan="7" class="ac-empty">Couldn\u2019t load the scan results.</td></tr>';
                         });
                     }
 
@@ -358,7 +335,7 @@
                     function rescan(button) {
                         button.disabled = true;
                         post('AutoCrop/Items/' + encodeURIComponent(button.getAttribute('data-rescan')) + '/Rescan').then(function () {
-                            button.closest('tr').querySelector('td:nth-child(6)').innerHTML = '<span class="ac-pill queued">Queued</span>';
+                            button.closest('tr').querySelector('td:nth-child(5)').innerHTML = '<span class="ac-pill queued">Queued</span>';
                             setTimeout(refresh, 15000);
                         }, function () {
                             button.disabled = false;
@@ -394,12 +371,18 @@
                             $('acEnabled').checked = c.Enabled !== false;
                             $('acHardware').checked = c.HardwareDecoding !== false;
                             $('acTrickplay').checked = c.UseTrickplay !== false;
-                            $('acDefaultMode').value = c.DefaultMode || 'per-scene';
+                            $('acDefaultMode').value = modeValue(c.DefaultMode, 'theatre');
+                            $('acEpisodeDefaultMode').value = modeValue(c.EpisodeDefaultMode, 'whole');
                             $('acMinBar').value = c.MinimumBarPercent;
-                            $('acMinSegment').value = c.MinimumSegmentSeconds;
-                            $('acTransition').value = c.TransitionMs;
                             $('acZoomSubtitles').checked = c.ZoomStyledSubtitles !== false;
                         });
+                    }
+
+                    // Modes stored by earlier versions: per-scene is now theatre, static is whole.
+                    function modeValue(mode, fallback) {
+                        if (mode === 'per-scene') return 'theatre';
+                        if (mode === 'static') return 'whole';
+                        return mode === 'theatre' || mode === 'whole' || mode === 'off' ? mode : fallback;
                     }
 
                     function number(id, fallback) {
@@ -415,9 +398,8 @@
                             c.HardwareDecoding = $('acHardware').checked;
                             c.UseTrickplay = $('acTrickplay').checked;
                             c.DefaultMode = $('acDefaultMode').value;
+                            c.EpisodeDefaultMode = $('acEpisodeDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
-                            c.MinimumSegmentSeconds = number('acMinSegment', 30);
-                            c.TransitionMs = Math.round(number('acTransition', 300));
                             c.ZoomStyledSubtitles = $('acZoomSubtitles').checked;
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
                         }).then(function (result) {

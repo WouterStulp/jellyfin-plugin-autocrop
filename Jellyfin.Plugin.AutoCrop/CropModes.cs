@@ -7,19 +7,32 @@ namespace Jellyfin.Plugin.AutoCrop;
 
 public static class CropModes
 {
-    public const string PerScene = "per-scene";
-    public const string Static = "static";
+    /// <summary>One crop for the whole file, cut to its narrowest recurring shape, as a regular cinema shows an IMAX film.</summary>
+    public const string Theatre = "theatre";
+
+    /// <summary>One crop for the whole file that never cuts picture: only bars present in every frame go.</summary>
+    public const string Whole = "whole";
+
     public const string Off = "off";
 
+    /// <summary>
+    /// A stored mode as one of the three. Modes from before this version map onto them: "per-scene"
+    /// (follow the scenes) is now theatre, "static" (one crop, never cut) is whole.
+    /// </summary>
     public static string Normalize(string? mode)
-        => mode is Static or Off ? mode : PerScene;
+        => mode switch
+        {
+            Whole or "static" => Whole,
+            Off => Off,
+            _ => Theatre,
+        };
 
-    public static bool IsValid(string? mode) => mode is PerScene or Static or Off;
+    public static bool IsValid(string? mode) => mode is Theatre or Whole or Off;
 
     /// <summary>
     /// The mode an item plays with: the first of its <paramref name="scopes"/> (the item, its series,
-    /// its libraries, in that order) with an override, else the server default. The scopes are only
-    /// enumerated as far as needed, so a library lookup is skipped when the item has its own.
+    /// its libraries, in that order) with an override, else <paramref name="serverDefault"/>. The
+    /// scopes are only enumerated as far as needed, so a library lookup is skipped when the item has its own.
     /// </summary>
     public static string Effective(IReadOnlyList<ModeOverride> overrides, string? serverDefault, IEnumerable<Guid> scopes)
     {

@@ -5,7 +5,7 @@ public class CropAnalyzerTests
     private const int W = 1920;
     private const int H = 1080;
 
-    private static readonly AnalyzerOptions Options = new(MinimumBarPercent: 1.0, MinimumSegmentSeconds: 2.0);
+    private static readonly AnalyzerOptions Options = new(MinimumBarPercent: 1.0);
 
     // 2.39:1 and 1.90:1 pictures centred in a 16:9 frame.
     private static readonly CropBox Scope = new(0, 138, 1920, 804);
@@ -21,10 +21,6 @@ public class CropAnalyzerTests
             list.Add(K(t, box));
         return list;
     }
-
-    private static IReadOnlyList<CropSegment> Segments(
-        IReadOnlyList<KeyframeSample> samples, double duration, AnalyzerOptions? options = null, IReadOnlyList<KeyframeSample>? refined = null)
-        => CropAnalyzer.Segments(samples, W, H, duration, options ?? Options, refined);
 
     // ----- trickplay thumbnails -----
 
@@ -122,238 +118,81 @@ public class CropAnalyzerTests
         Assert.Equal(Full, CropAnalyzer.Union(new[] { K(0, new CropBox(2, 2, W - 4, H - 4)) }, W, H, 1.0));
     }
 
-    // ----- per-scene segments -----
+    // ----- the theatre crop -----
+
+    private static CropBox Theatre(IReadOnlyList<KeyframeSample> samples) => CropAnalyzer.TheatreCrop(samples, W, H, Options);
 
     [Fact]
-    public void Segments_ConstantPicture_IsOneSegment()
+    public void TheatreCrop_IsTheNarrowestRecurringLetterbox()
     {
-        var segments = Segments(Every2s(0, 60, Scope), 60);
+        // A 2.39:1 film with IMAX scenes in the full frame is cut to 2.39:1 throughout, as a regular
+        // cinema shows it; the whole picture is the full frame.
+        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Full)).Concat(Every2s(900, 1500, Scope)).ToList();
 
-        Assert.Equal(new[] { new CropSegment(0, 60, Scope) }, segments);
+        Assert.Equal(Scope, Theatre(samples));
+        Assert.Equal(Full, CropAnalyzer.Union(samples, W, H, 1.0));
     }
 
     [Fact]
-    public void Segments_NearlyEqualBoxes_Merge()
+    public void TheatreCrop_PicksTheNarrowestOfSeveralLetterboxes()
     {
-        var samples = new[] { K(0, Scope), K(2, Scope with { Y = 137, Height = 806 }), K(4, Scope with { Y = 140 }) };
+        var samples = Every2s(0, 300, Imax).Concat(Every2s(300, 600, Scope)).Concat(Every2s(600, 900, Full)).ToList();
 
-        var segment = Assert.Single(Segments(samples, 6));
-        Assert.Equal(137, segment.Box.Y);
-        Assert.Equal(Scope.Bottom + 2, segment.Box.Bottom);
+        Assert.Equal(Scope, Theatre(samples));
     }
 
     [Fact]
-    public void Segments_FadeToBlack_InheritsTheNeighbouringBox()
+    public void TheatreCrop_OneShape_IsTheWholePicture()
     {
-        var samples = Every2s(0, 20, Scope).Concat(Every2s(20, 30, null)).Concat(Every2s(30, 50, Scope)).ToList();
-
-        Assert.Equal(new[] { new CropSegment(0, 50, Scope) }, Segments(samples, 50));
+        Assert.Equal(Scope, Theatre(Every2s(0, 600, Scope)));
+        Assert.Equal(Full, Theatre(Every2s(0, 600, Full)));
+        Assert.Equal(Full, Theatre(Array.Empty<KeyframeSample>()));
+        Assert.Equal(Full, Theatre(new[] { K(0, null) }));
     }
 
     [Fact]
-    public void Segments_AllBlack_IsOneFullFrameSegment()
+    public void TheatreCrop_IgnoresPillarboxShapes()
     {
-        Assert.Equal(new[] { new CropSegment(0, 10, Full) }, Segments(Every2s(0, 10, null), 10));
-    }
-
-    [Fact]
-    public void Segments_ImaxStretches_GetTheLargerBox()
-    {
-        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
-
-        var segments = Segments(samples, 1500);
-
-        Assert.Equal(3, segments.Count);
-        Assert.Equal(Scope, segments[0].Box);
-        Assert.Equal(Imax, segments[1].Box);
-        Assert.Equal(Scope, segments[2].Box);
-    }
-
-    [Fact]
-    public void Segments_BoundaryBetweenKeyframes_IsPaddedWithTheLargerBox()
-    {
-        // The change happened somewhere between the last 2.39 keyframe (598) and the first 1.90 one
-        // (600), and back between 898 and 900: the IMAX box must cover both gaps.
-        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
-
-        var segments = Segments(samples, 1500);
-
-        Assert.Equal(598, segments[1].Start);
-        Assert.Equal(900, segments[1].End);
-        Assert.Equal(598, segments[0].End);
-        Assert.Equal(900, segments[2].Start);
-    }
-
-    [Fact]
-    public void Segments_FramesDecodedAroundASwitch_PutItOnTheCut()
-    {
-        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
-        var refined = new[]
-        {
-            K(598.958, Scope), K(599.0, Scope), K(599.042, Imax), K(599.958, Imax),
-            K(898.0, Imax), K(899.5, Imax), K(899.542, Scope), K(899.958, Scope),
-        };
-
-        var segments = Segments(samples, 1500, refined: refined);
-
-        // Zooming out starts on the last narrow frame, zooming in on the first narrow frame.
-        Assert.Equal(3, segments.Count);
-        Assert.Equal(599.0, segments[0].End);
-        Assert.Equal(599.0, segments[1].Start);
-        Assert.Equal(Imax, segments[1].Box);
-        Assert.Equal(899.542, segments[1].End);
-        Assert.Equal(899.542, segments[2].Start);
-    }
-
-    [Fact]
-    public void Segments_DecodedFrames_WidenTheUnionButNeverMakeAMatte()
-    {
-        var pillarbox = new CropBox(240, 0, 1440, 1080);
-        var keyframes = Every2s(0, 300, Full).Concat(Every2s(310, 600, Full)).ToList();
-        var frames = Enumerable.Range(0, 60).Select(i => K(302 + i * 0.1, pillarbox)).ToList();
-
-        // As keyframes, 60 recurring 4:3 frames are a matte of their own; decoded around a switch they aren't.
-        Assert.Contains(Segments(keyframes.Concat(frames).ToList(), 600), s => s.Box == pillarbox);
-        Assert.Equal(Full, Assert.Single(Segments(keyframes, 600, refined: frames)).Box);
-
-        var wider = Enumerable.Range(0, 3).Select(i => K(300 + i * 0.042, new CropBox(0, 0, 1920, 1080))).ToList();
-        var scope = Segments(Every2s(0, 600, Scope), 600, refined: wider);
-        Assert.Contains(scope, s => s.Box == Full);
-    }
-
-    [Fact]
-    public void SwitchWindows_AreTheGapsBetweenRunsOfDifferentMattes()
-    {
-        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).ToList();
-
-        var windows = CropAnalyzer.SwitchWindows(samples, W, H, Options);
-
-        Assert.Equal(new[] { (598.0, 600.0), (898.0, 900.0) }, windows);
-        Assert.Empty(CropAnalyzer.SwitchWindows(Every2s(0, 600, Scope), W, H, Options));
-        Assert.Empty(CropAnalyzer.SwitchWindows(Array.Empty<KeyframeSample>(), W, H, Options));
-    }
-
-    [Fact]
-    public void SwitchWindows_SkipGapsTooLongToDecode()
-    {
-        var samples = Every2s(0, 100, Scope).Concat(Every2s(300, 400, Imax)).Concat(Every2s(401, 500, Scope)).ToList();
-
-        var windows = CropAnalyzer.SwitchWindows(samples, W, H, Options);
-
-        Assert.Equal((398.0, 401.0), Assert.Single(windows));
-    }
-
-    [Fact]
-    public void Compact_KeepsTheEndsOfEveryRunOfEqualBoxes()
-    {
-        var a = new CropBox(0, 138, 1920, 804);
-        var b = new CropBox(0, 35, 1920, 1010);
-        var frames = new[] { K(0, a), K(1, a), K(2, a), K(3, b), K(4, b), K(5, null), K(6, Full) };
-
-        var kept = CropAnalyzer.Compact(frames);
-
-        Assert.Equal(new[] { 0.0, 2, 3, 4, 6 }, kept.Select(f => f.Time));
-        Assert.Empty(CropAnalyzer.Compact(new[] { K(0, null) }));
-        Assert.Single(CropAnalyzer.Compact(new[] { K(0, a) }));
-    }
-
-    [Fact]
-    public void Segments_NeverCropPictureSeenInsideThem()
-    {
-        var samples = Every2s(0, 40, Scope)
-            .Concat(new[] { K(40, Imax), K(41, new CropBox(100, 0, 1720, 1080)) })
-            .Concat(Every2s(42, 80, Scope))
-            .Concat(Every2s(80, 120, new CropBox(0, 100, 1920, 880)))
-            .ToList();
-
-        var segments = Segments(samples, 120);
-
-        foreach (var sample in samples.Where(s => s.Box != null))
-        {
-            var segment = segments.Single(s => s.Start <= sample.Time && sample.Time < s.End || sample.Time == s.End && s == segments[^1]);
-            Assert.Equal(segment.Box, segment.Box.Union(sample.Box!));
-        }
-    }
-
-    [Fact]
-    public void Segments_ShortWideFlash_WidensTheCropInsteadOfBeingCut()
-    {
-        // One full-frame keyframe at 30 s inside a 2.39 film: under 2 s on its own.
-        var samples = Every2s(0, 30, Scope).Append(K(30, Full)).Concat(Every2s(32, 60, Scope)).ToList();
-
-        var segments = Segments(samples, 60);
-
-        Assert.Contains(segments, s => s.Box == Full && s.Start <= 30 && s.End >= 30);
-        Assert.DoesNotContain(segments, s => s.Duration < 2 && segments.Count > 1);
-    }
-
-    [Fact]
-    public void Segments_ShortSegment_JoinsTheNeighbourThatLosesLeastZoom()
-    {
-        // A 1 s 2.20 stretch between a long 2.39 and a long 1.90 part goes into the 1.90 one.
-        var mid = new CropBox(0, 104, 1920, 872);
-        var samples = Every2s(0, 60, Scope).Append(K(60, mid)).Concat(Every2s(61, 121, Imax)).ToList();
-
-        var segments = Segments(samples, 121, Options with { MinimumSegmentSeconds = 3 });
-
-        Assert.Equal(2, segments.Count);
-        Assert.Equal(Scope, segments[0].Box);
-        Assert.Equal(Imax, segments[1].Box);
-        Assert.Equal(58, segments[0].End);
-    }
-
-    [Fact]
-    public void Segments_TooMany_FallBackToTheWholeFileUnion()
-    {
-        // 50 alternations of 20 s each.
-        var samples = Enumerable.Range(0, 500).Select(i => K(i * 2, i / 10 % 2 == 0 ? Scope : Imax)).ToList();
-
-        var segments = Segments(samples, 1000, Options with { MaxSegments = 10 });
-
-        Assert.Equal(new[] { new CropSegment(0, 1000, Imax) }, segments);
-    }
-
-    [Fact]
-    public void Segments_DarkShotsAndTitleCards_StayInTheirScenesMatte()
-    {
-        // A scope film whose dark shots, a title card and the credits give smaller, scattered boxes.
-        var samples = Every2s(0, 600, Scope)
-            .Concat(Every2s(600, 700, new CropBox(400, 300, 1100, 400)))
-            .Concat(Every2s(700, 1300, Scope))
-            .Concat(Every2s(1300, 1400, new CropBox(820, 500, 276, 100)))
-            .Concat(Every2s(1400, 2000, Scope))
-            .Concat(Every2s(2000, 2200, new CropBox(360, 380, 1193, 40)))
-            .ToList();
-
-        Assert.Equal(new[] { new CropSegment(0, 2200, Scope) }, Segments(samples, 2200));
-    }
-
-    [Fact]
-    public void Segments_DarkShotInsideAnImaxScene_DoesNotSplitIt()
-    {
-        // A dark IMAX shot whose box fits the scope matte lands there, and the short stretch is
-        // absorbed back into the IMAX scene with the default minimum length.
-        var samples = Every2s(0, 600, Scope)
-            .Concat(Every2s(600, 700, Imax))
-            .Concat(Every2s(700, 710, new CropBox(300, 200, 1300, 600)))
-            .Concat(Every2s(710, 900, Imax))
-            .Concat(Every2s(900, 1500, Scope))
-            .ToList();
-
-        var segments = Segments(samples, 1500, Options with { MinimumSegmentSeconds = 30 });
-
-        Assert.Equal(new[] { Scope, Imax, Scope }, segments.Select(s => s.Box));
-    }
-
-    [Fact]
-    public void Segments_RecurringPillarbox_IsAMatte()
-    {
+        // A 4:3 part in a 16:9 episode: cropping to it would cut the sides of the rest, and on a wide
+        // screen it only adds to the side bars.
         var pillar = new CropBox(240, 0, 1440, 1080);
         var samples = Every2s(0, 300, pillar).Concat(Every2s(300, 600, Full)).Concat(Every2s(600, 900, pillar)).ToList();
 
-        var segments = Segments(samples, 900);
+        Assert.Equal(Full, Theatre(samples));
+        Assert.Contains(pillar, CropAnalyzer.Mattes(samples.Select(s => s.Box!).ToList(), 9, 5, Options));
+    }
 
-        Assert.Equal(new[] { pillar, Full, pillar }, segments.Select(s => s.Box));
+    [Fact]
+    public void TheatreCrop_DarkShotsAndTitleCards_DontMakeAShape()
+    {
+        var samples = Every2s(0, 600, Scope)
+            .Concat(new[] { K(600, new CropBox(300, 200, 1300, 600)), K(602, new CropBox(600, 400, 276, 100)), K(604, null) })
+            .ToList();
+
+        Assert.Equal(Scope, Theatre(samples));
+    }
+
+    [Fact]
+    public void TheatreCrop_RareShapes_DontCount()
+    {
+        // 19 keyframes of 2.39:1 in a full-frame film is under the minimum of 20.
+        var samples = Every2s(0, 800, Full).Concat(Enumerable.Range(0, 19).Select(i => K(800 + (i * 2), Scope))).ToList();
+
+        Assert.Equal(Full, Theatre(samples));
+    }
+
+    [Fact]
+    public void TheatreCrop_DropsThinBars()
+    {
+        Assert.Equal(Full, Theatre(Every2s(0, 600, new CropBox(0, 4, 1920, 1072))));
+    }
+
+    [Fact]
+    public void TheatreCrop_KeyframesOutOfOrder_DontMatter()
+    {
+        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Full)).Reverse().ToList();
+
+        Assert.Equal(Scope, Theatre(samples));
     }
 
     [Fact]
@@ -364,25 +203,6 @@ public class CropAnalyzerTests
         var boxes = Enumerable.Repeat(Full, 400).Concat(Enumerable.Repeat(Scope, 19)).Concat(Enumerable.Repeat(strip, 100)).ToList();
 
         Assert.Equal(new[] { Full }, CropAnalyzer.Mattes(boxes, 9, 5, Options));
-    }
-
-    [Fact]
-    public void Segments_KeyframesOutOfOrder_AreSorted()
-    {
-        var samples = Every2s(0, 600, Scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, Scope)).Reverse().ToList();
-
-        Assert.Equal(3, Segments(samples, 1500).Count);
-    }
-
-    [Fact]
-    public void Segments_ThinBarsAreDroppedPerSegment()
-    {
-        var almostFull = new CropBox(0, 4, 1920, 1072);
-        var samples = Every2s(0, 20, Scope).Concat(Every2s(20, 40, almostFull)).ToList();
-
-        var segments = Segments(samples, 40);
-
-        Assert.Equal(Full, segments[^1].Box);
     }
 
     // ----- standard aspect ratios -----
@@ -508,43 +328,44 @@ public class CropAnalyzerTests
         Assert.StartsWith("Picture covers only 26%", CropAnalyzer.Snap(new CropBox(460, 270, 1000, 540), W, H).Suspicious);
     }
 
-    private static CropResult Analysed(IReadOnlyList<KeyframeSample> samples, double duration)
+    private static CropResult Analysed(IReadOnlyList<KeyframeSample> samples)
     {
         var result = new CropResult { FrameWidth = W, FrameHeight = H };
-        CropScanner.Analyse(result, samples, duration, Options with { MinimumSegmentSeconds = 30 });
+        CropScanner.Analyse(result, samples, Options);
         return result;
     }
 
     [Fact]
     public void Analyse_SuspiciousWholeFile_IsNotCropped()
     {
-        var result = Analysed(Every2s(0, 600, new CropBox(375, 441, 1169, 197)), 600);
+        var result = Analysed(Every2s(0, 600, new CropBox(375, 441, 1169, 197)));
 
         Assert.True(result.Suspicious);
         Assert.Equal(Full, result.Crop);
-        Assert.Null(result.Segments);
+        Assert.Equal(Full, result.TheatreCrop);
         Assert.False(result.HasCrop);
     }
 
     [Fact]
-    public void SnapSegments_SuspiciousSegment_GetsTheWholeFileCrop()
+    public void Analyse_SuspiciousTheatreCrop_FallsBackToTheWholePicture()
     {
-        var strip = new CropBox(375, 441, 1169, 197);
-        var segments = new[] { new CropSegment(0, 600, Scope), new CropSegment(600, 700, strip), new CropSegment(700, 1300, Scope) };
+        // 1920x914 is 2.10:1, no standard ratio within 1.5%: the whole picture (the full frame) plays instead.
+        var result = Analysed(Every2s(0, 600, Full).Concat(Every2s(600, 1200, new CropBox(0, 83, 1920, 914))).ToList());
 
-        Assert.Equal(new[] { Scope, Imax, Scope }, CropAnalyzer.SnapSegments(segments, Imax, W, H).Select(s => s.Box));
-        Assert.Equal(new[] { new CropSegment(0, 1300, Scope) }, CropAnalyzer.SnapSegments(segments, Scope, W, H));
+        Assert.False(result.Suspicious);
+        Assert.Equal(Full, result.Crop);
+        Assert.Equal(Full, result.TheatreCrop);
     }
 
     [Fact]
-    public void Analyse_SnapsTheCropAndEverySegment()
+    public void Analyse_SnapsBothCrops()
     {
         var scope = new CropBox(0, 139, 1920, 802);
-        var result = Analysed(Every2s(0, 600, scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, scope)).ToList(), 1500);
+        var result = Analysed(Every2s(0, 600, scope).Concat(Every2s(600, 900, Imax)).Concat(Every2s(900, 1500, scope)).ToList());
 
         // 1920x1010 is 1.901:1; 1.90 needs 1010.5 rows.
-        var imax = Imax with { Height = 1011 };
-        Assert.Equal(new[] { Scope, imax, Scope }, result.Segments!.Select(s => s.Box));
-        Assert.Equal(imax, result.Crop);
+        Assert.Equal(Imax with { Height = 1011 }, result.Crop);
+        Assert.Equal(Scope, result.TheatreCrop);
+        Assert.True(result.HasCrop);
     }
 }

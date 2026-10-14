@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text.Json.Serialization;
 
 namespace Jellyfin.Plugin.AutoCrop;
@@ -24,11 +22,15 @@ public sealed class CropResult
 
     public int FrameHeight { get; set; }
 
-    /// <summary>The whole-file picture area, used in static mode and as the fallback.</summary>
+    /// <summary>The whole picture: the union of every keyframe's picture, which never cuts any of it. Played in whole mode.</summary>
     public CropBox? Crop { get; set; }
 
-    /// <summary>The per-scene timeline; null when the whole file is one segment.</summary>
-    public List<CropSegment>? Segments { get; set; }
+    /// <summary>
+    /// The theatre crop: the narrowest letterbox shape the file keeps coming back to, which wider
+    /// shots are cut to, as a regular cinema shows an IMAX film. Equals <see cref="Crop"/> when the file
+    /// has one shape. Played in theatre mode.
+    /// </summary>
+    public CropBox? TheatreCrop { get; set; }
 
     public int Keyframes { get; set; }
 
@@ -36,7 +38,7 @@ public sealed class CropResult
 
     public string? Error { get; set; }
 
-    /// <summary>The <see cref="CropAnalyzer.Version"/> that produced Crop and Segments; 0 for results from before versions.</summary>
+    /// <summary>The <see cref="CropAnalyzer.Version"/> that produced the crops; 0 for results from before versions.</summary>
     public int AnalysisVersion { get; set; }
 
     /// <summary>What the result was measured on, one of <see cref="AnalysisSources"/>; null for results from before sources.</summary>
@@ -46,14 +48,8 @@ public sealed class CropResult
     public double? PixelAspect { get; set; }
 
     /// <summary>
-    /// Whether the frames around each shape switch were decoded, so the switches sit on the frame of
-    /// the cut (or the file has no switches). False for results from before, which get that pass once.
-    /// </summary>
-    public bool Refined { get; set; }
-
-    /// <summary>
     /// Why the measured picture can't be a real one (no standard aspect ratio, implausible ratio, under
-    /// half the frame); then Crop is the full frame. Null otherwise.
+    /// half the frame); then both crops are the full frame. Null otherwise.
     /// </summary>
     public string? SuspiciousReason { get; set; }
 
@@ -64,9 +60,6 @@ public sealed class CropResult
     public bool Suspicious => !Failed && SuspiciousReason != null;
 
     [JsonIgnore]
-    public bool IsPerScene => !Failed && Segments is { Count: > 1 };
-
-    [JsonIgnore]
     public bool HasCrop
     {
         get
@@ -75,7 +68,7 @@ public sealed class CropResult
                 return false;
 
             var full = CropBox.Full(FrameWidth, FrameHeight);
-            return Crop != full || (Segments?.Any(s => s.Box != full) ?? false);
+            return Crop != full || (TheatreCrop ?? full) != full;
         }
     }
 

@@ -2,19 +2,15 @@
 (function () {
     'use strict';
 
-    var MODES = ['per-scene', 'static', 'off'];
-    var MODE_LABELS = { 'per-scene': 'per scene', 'static': 'whole film', 'off': 'off' };
+    var MODES = ['theatre', 'whole', 'off'];
+    var MODE_LABELS = { theatre: 'theatre crop', whole: 'whole picture', off: 'off' };
     var ENABLED_KEY = 'autocrop.enabled';
-    var LEGACY_MODE_KEY = 'autocrop.mode';
     var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
     var MENU_LABEL = 'Crop black bars';
     // The canvas JavascriptSubtitlesOctopus (@jellyfin/libass-wasm) draws ASS/SSA on, in jellyfin-web
     // 10.11 and 12. PGS and VobSub (libpgs, libbitsub) draw on canvases without a class.
     var ASS_CANVAS_CLASS = 'libassjs-canvas';
-    var VIDEO_EVENTS = ['timeupdate', 'loadedmetadata', 'play', 'playing', 'pause', 'ratechange'];
-    // Lands just past a boundary rather than just before it, where nothing would change yet.
-    var BOUNDARY_MARGIN_MS = 15;
     var VIDEO_ID = /\/videos\/([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\//i;
 
     /**
@@ -62,34 +58,18 @@
         };
     }
 
-    /** Index of the segment that contains time (seconds), clamped to the first and last. */
-    function segmentAt(segments, time) {
-        var low = 0;
-        var high = segments.length - 1;
-        while (low < high) {
-            var mid = (low + high + 1) >> 1;
-            if (segments[mid].start <= time) {
-                low = mid;
-            } else {
-                high = mid - 1;
-            }
-        }
-        return low;
-    }
-
     /**
-     * Milliseconds of wall-clock time until playback at rate reaches the start of the segment after
-     * time (seconds), plus a small margin; null when there is none ahead or playback doesn't advance.
+     * A mode as one of the three, or null for anything else. Modes stored by earlier versions map
+     * onto them: per-scene (followed the scenes) is theatre, static (one crop, never cut) is whole.
      */
-    function nextBoundaryDelay(segments, time, rate) {
-        if (!segments || segments.length < 2 || !(rate > 0)) {
-            return null;
+    function normalizeMode(mode) {
+        if (mode === 'theatre' || mode === 'per-scene') {
+            return 'theatre';
         }
-        var next = segmentAt(segments, time) + 1;
-        if (next >= segments.length) {
-            return null;
+        if (mode === 'whole' || mode === 'static') {
+            return 'whole';
         }
-        return Math.max(0, (segments[next].start - time) * 1000 / rate) + BOUNDARY_MARGIN_MS;
+        return mode === 'off' ? 'off' : null;
     }
 
     function nextMode(mode) {
@@ -120,33 +100,16 @@
         if (!enabled) {
             return 'off';
         }
-        if (MODES.indexOf(seriesMode) >= 0) {
-            return seriesMode;
-        }
-        return MODES.indexOf(serverMode) >= 0 ? serverMode : 'per-scene';
+        return normalizeMode(seriesMode) || normalizeMode(serverMode) || 'theatre';
     }
 
-    /**
-     * Older versions kept one global mode in the browser. It becomes the on/off flag: a stored "off"
-     * stays off, any other mode means on, which now plays the server's mode for each item.
-     */
-    function migrateStorage(storage) {
-        var legacy = storage.getItem(LEGACY_MODE_KEY);
-        if (legacy === null) {
-            return;
-        }
-        if (storage.getItem(ENABLED_KEY) === null) {
-            storage.setItem(ENABLED_KEY, legacy === 'off' ? 'off' : 'on');
-        }
-        storage.removeItem(LEGACY_MODE_KEY);
-    }
-
-    /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else per scene. */
+    /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else theatre. */
     function enabledMode(mode, defaultMode) {
         if (mode && mode !== 'off') {
             return mode;
         }
-        return defaultMode && defaultMode !== 'off' ? defaultMode : 'per-scene';
+        var fallback = normalizeMode(defaultMode);
+        return fallback && fallback !== 'off' ? fallback : 'theatre';
     }
 
     function transformCss(transform) {
@@ -156,28 +119,24 @@
     }
 
     /**
-     * The CSS transition for a new transform. A scene switch animates, also from and to the full
-     * frame. The first transform of an item (playback or its data just started) jumps, as does a seek
-     * and turning the crop off (transitionMs 0).
+     * The transform for a subtitle canvas: the video's own for ASS/SSA, so positioned signs stay on
+     * their spot in the picture; none for anything else. Bitmap subtitles (PGS, VobSub) are often
+     * placed inside the black bars and would be pushed off screen, and an unknown canvas is left alone.
      */
-    function transitionCss(transitionMs, seeking, settled) {
-        return transitionMs > 0 && !seeking && settled ? 'transform ' + transitionMs + 'ms ease-in-out' : '';
+    function canvasTransform(className, videoCss, zoomStyled) {
+        return zoomStyled && (' ' + (className || '') + ' ').indexOf(' ' + ASS_CANVAS_CLASS + ' ') >= 0 ? videoCss : '';
     }
 
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
             computeTransform: computeTransform,
-            segmentAt: segmentAt,
-            nextBoundaryDelay: nextBoundaryDelay,
             canvasTransform: canvasTransform,
+            normalizeMode: normalizeMode,
             nextMode: nextMode,
             transformCss: transformCss,
-            transitionCss: transitionCss,
             isAspectSheet: isAspectSheet,
-            fitTop: fitTop,
             enabledMode: enabledMode,
-            effectiveMode: effectiveMode,
-            migrateStorage: migrateStorage
+            effectiveMode: effectiveMode
         };
         return;
     }
@@ -192,9 +151,6 @@
         autoAspect: true,
         enabled: true,
         seriesModes: {},
-        seeking: false,
-        settled: false,
-        boundaryTimer: null,
         css: '',
         range: null,
         choosingCrop: false
@@ -247,8 +203,7 @@
             if (state.source === source) {
                 state.itemId = itemId;
                 state.data = data;
-                state.settled = false;
-                refresh();
+                update();
             }
         });
     }
@@ -315,15 +270,6 @@
         }
     }
 
-    /**
-     * The transform for a subtitle canvas: the video's own for ASS/SSA, so positioned signs stay on
-     * their spot in the picture; none for anything else. Bitmap subtitles (PGS, VobSub) are often
-     * placed inside the black bars and would be pushed off screen, and an unknown canvas is left alone.
-     */
-    function canvasTransform(className, videoCss, zoomStyled) {
-        return zoomStyled && (' ' + (className || '') + ' ').indexOf(' ' + ASS_CANVAS_CLASS + ' ') >= 0 ? videoCss : '';
-    }
-
     // Subtitle renderers draw on canvases beside the video, placed from the video's size, some from its
     // transformed bounds. Keep them over the whole frame as Jellyfin shows it without the zoom. The
     // ASS canvas then gets the video's transform around the same centre, so it zooms exactly along.
@@ -352,12 +298,10 @@
                 canvas.style.height = height;
             }
 
-            // Compared with what was set, not read back: browsers rewrite transform strings. The video's
-            // transition comes along, so the canvas eases back to the full frame with it.
+            // Compared with what was set, not read back: browsers rewrite transform strings.
             var transform = canvasTransform(canvas.className, state.css, state.data && state.data.zoomStyledSubtitles);
             if ((canvas.autocropTransform || '') !== transform) {
                 canvas.autocropTransform = transform;
-                canvas.style.transition = video.style.transition;
                 canvas.style.transformOrigin = transform ? '50% 50%' : '';
                 canvas.style.transform = transform;
             }
@@ -378,11 +322,8 @@
         }
     }
 
-    function apply(video, transform, transitionMs) {
+    function apply(video, transform) {
         var css = transformCss(transform);
-        // Settled once a transform with data was applied; a transform without (off, another item) starts over.
-        var transition = transitionCss(transitionMs, state.seeking, state.settled);
-        state.settled = transitionMs > 0;
         if (css === state.css) {
             if (css) {
                 placeCanvases(video);
@@ -390,12 +331,10 @@
             return;
         }
 
-        video.style.transition = transition;
         video.style.transformOrigin = css ? '50% 50%' : '';
         video.style.transform = css;
         if (video.parentNode) {
-            // Stays hidden while the picture eases back to the full frame.
-            video.parentNode.style.overflow = css || transition ? 'hidden' : '';
+            video.parentNode.style.overflow = css ? 'hidden' : '';
         }
 
         state.css = css;
@@ -404,6 +343,7 @@
         placeCanvases(video);
     }
 
+    // One crop for the whole item: the theatre crop or the whole picture, by mode.
     function update() {
         var video = state.video;
         if (!video) {
@@ -413,40 +353,13 @@
         var data = state.data;
         var mode = currentMode();
         if (!data || mode === 'off' || !state.autoAspect || !video.videoWidth) {
-            apply(video, null, 0);
+            apply(video, null);
             return;
         }
 
-        var box = data.crop;
-        if (mode === 'per-scene' && data.segments && data.segments.length) {
-            box = data.segments[segmentAt(data.segments, video.currentTime)].box;
-        }
-
-        var transform = computeTransform(video.clientWidth, video.clientHeight, video.videoWidth, video.videoHeight,
-            box, data.frameWidth, data.frameHeight);
-        apply(video, transform, data.transitionMs);
-    }
-
-    // One timer for the next segment boundary, from the playback position and rate. Every event that
-    // can move either (seeking, pausing, a rate change, timeupdate) sets it again.
-    function schedule() {
-        clearTimeout(state.boundaryTimer);
-        state.boundaryTimer = null;
-        var video = state.video;
-        var data = state.data;
-        if (!video || video.paused || !data || currentMode() !== 'per-scene') {
-            return;
-        }
-
-        var delay = nextBoundaryDelay(data.segments, video.currentTime, video.playbackRate);
-        if (delay !== null) {
-            state.boundaryTimer = setTimeout(refresh, delay);
-        }
-    }
-
-    function refresh() {
-        update();
-        schedule();
+        var box = mode === 'theatre' ? data.theatreCrop || data.crop : data.crop;
+        apply(video, computeTransform(video.clientWidth, video.clientHeight, video.videoWidth, video.videoHeight,
+            box, data.frameWidth, data.frameHeight));
     }
 
     function onCueChange() {
@@ -456,9 +369,8 @@
     }
 
     function detach() {
-        clearTimeout(state.boundaryTimer);
         if (state.video) {
-            apply(state.video, null, 0);
+            apply(state.video, null);
         }
         state.video = null;
         state.source = '';
@@ -468,26 +380,10 @@
 
     function listen(video) {
         video.autocropListening = true;
-        for (var i = 0; i < VIDEO_EVENTS.length; i++) {
-            video.addEventListener(VIDEO_EVENTS[i], refresh);
-        }
-        video.addEventListener('seeking', function () {
-            state.seeking = true;
-            schedule();
-        });
-        video.addEventListener('seeked', function () {
-            refresh();
-            state.seeking = false;
-        });
-        // The container stays clipped while the picture eases back to the full frame.
-        video.addEventListener('transitionend', function () {
-            if (!state.css && video.parentNode) {
-                video.parentNode.style.overflow = '';
-            }
-        });
+        video.addEventListener('loadedmetadata', update);
         // The player can change size without the window doing so.
         if (window.ResizeObserver) {
-            new window.ResizeObserver(refresh).observe(video);
+            new window.ResizeObserver(update).observe(video);
         }
         if (window.MutationObserver && video.parentNode) {
             new window.MutationObserver(onPlayerMutations).observe(video.parentNode,
@@ -497,7 +393,6 @@
 
     // Every second: find the player, notice a new item (next episode, autoplay) and follow Jellyfin's
     // aspect-ratio setting. Cover and Fill set object-fit on the video; Auto leaves it at contain.
-    // While playing it also updates, a safety net for background tabs that throttle timers.
     function tick() {
         var video = document.querySelector('.videoPlayerContainer video');
         if (video !== state.video) {
@@ -511,9 +406,7 @@
             return;
         }
 
-        var autoAspect = window.getComputedStyle(video).objectFit === 'contain';
-        var aspectChanged = autoAspect !== state.autoAspect;
-        state.autoAspect = autoAspect;
+        state.autoAspect = window.getComputedStyle(video).objectFit === 'contain';
 
         var tracks = video.textTracks || [];
         for (var i = 0; i < tracks.length; i++) {
@@ -525,7 +418,7 @@
 
         var source = video.currentSrc || video.src || '';
         if (source !== state.source) {
-            apply(video, null, 0);
+            apply(video, null);
             state.source = source;
             state.itemId = null;
             state.data = null;
@@ -543,9 +436,7 @@
         } else if (!state.itemId || Date.now() - state.lastSessionCheck > 10000) {
             resolveFromSession(source);
         }
-        if (!video.paused || aspectChanged) {
-            refresh();
-        }
+        update();
         // Picks up a subtitle track loaded after the zoom was applied.
         onCueChange();
     }
@@ -587,7 +478,7 @@
 
     function showMode() {
         toast('Auto-crop: ' + MODE_LABELS[currentMode()]);
-        refresh();
+        update();
     }
 
     function onKeyDown(e) {
@@ -682,24 +573,6 @@
         });
 
         last.parentNode.insertBefore(item, last.nextSibling);
-        keepOnScreen(sheet);
-    }
-
-    // Jellyfin positions the sheet for its own options before ours is added; one more row can push
-    // it past the bottom of the window, so move it up by the overflow.
-    function fitTop(top, height, viewportHeight, margin) {
-        return Math.max(margin, Math.min(top, viewportHeight - height - margin));
-    }
-
-    function keepOnScreen(sheet) {
-        var top = parseFloat(sheet.style.top);
-        if (sheet.style.position !== 'fixed' || isNaN(top)) {
-            return;
-        }
-        var fitted = fitTop(top, sheet.offsetHeight, window.innerHeight, 10);
-        if (fitted !== top) {
-            sheet.style.top = fitted + 'px';
-        }
     }
 
     // Jellyfin appends every dialog, the player's action sheets included, to the body.
@@ -717,17 +590,12 @@
         }
     }
 
-    try {
-        migrateStorage(window.localStorage);
-    } catch (e) {
-        // Storage blocked: nothing stored to migrate.
-    }
     document.addEventListener('keydown', onKeyDown, true);
     if (window.MutationObserver && document.body) {
         new window.MutationObserver(onDialogs).observe(document.body, { childList: true });
     }
-    window.addEventListener('resize', refresh);
-    document.addEventListener('fullscreenchange', refresh);
-    document.addEventListener('webkitfullscreenchange', refresh);
+    window.addEventListener('resize', update);
+    document.addEventListener('fullscreenchange', update);
+    document.addEventListener('webkitfullscreenchange', update);
     setInterval(tick, 1000);
 })();

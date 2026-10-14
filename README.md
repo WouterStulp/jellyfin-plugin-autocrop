@@ -10,8 +10,8 @@ Some files store their black bars inside the video: a widescreen film saved as a
 
 ## Features
 
-- **Exact.** Every file is measured, so nothing is guessed and no picture is ever cut off.
-- **Follows IMAX scenes.** Films that switch between widescreen and taller IMAX scenes are followed scene by scene, with every switch timed to the frame of the cut.
+- **Exact.** Every file is measured, so nothing is guessed.
+- **One crop per film.** Nothing switches mid-film. A film that cuts between widescreen and taller IMAX scenes plays in its widescreen shape throughout, as a regular cinema shows it, or with the whole picture and bars in the widescreen scenes; your choice.
 - **Only zooms when it helps.** On a normal 16:9 screen nothing changes.
 - **Works in the background.** New films and episodes are measured automatically, usually in about a second.
 - **Dashboard** with everything it found, plus settings.
@@ -33,19 +33,15 @@ While watching in the browser, open the **⚙ settings → Aspect Ratio** and ch
 
 <img src="docs/images/menu.png" alt="The Aspect Ratio menu with Crop black bars selected" width="263">
 
-While it's on, each film or episode plays in the mode the server sets for it (normally per scene). Press **C** during playback to switch between:
+While it's on, each film or episode plays in the mode the server sets for it: films in the theatre crop, series in the whole picture. Press **C** during playback to switch between:
 
 | Mode | What you see |
 | --- | --- |
-| **Per scene** | The crop follows the picture shape, e.g. zooms out for IMAX scenes. |
-| **Static** | One crop for the whole file. |
+| **Theatre crop** | One crop, cut to the film's widescreen shape. IMAX scenes lose their extra height, as in a regular cinema. |
+| **Whole picture** | One crop that never cuts picture. Only bars present in every frame go; a film with IMAX scenes keeps bars in its widescreen scenes. |
 | **Off** | Normal playback. |
 
 This choice is remembered in that browser for the whole series (or that film).
-
-In per-scene mode the crop follows the film. Here a 2.39:1 scene switches to a taller IMAX scene, and AutoCrop zooms out so the whole picture stays visible:
-
-![Per-scene cropping following a switch from 2.39:1 to IMAX](docs/images/per-scene.gif)
 
 ## Dashboard and settings
 
@@ -55,10 +51,8 @@ Go to **Dashboard → Plugins → AutoCrop**.
 
 - **Overview:** every measured file with its picture size and shape. Search, filters, **Rescan** per file, and **Scan library now**.
 - **Settings:**
-  - default mode, and a mode per library
+  - the default mode for films (theatre crop) and for series (whole picture), and a mode per library
   - minimum bar size (1%)
-  - minimum scene length (30 s)
-  - zoom transition (300 ms)
   - zoom styled (ASS) subtitles with the picture (on)
   - GPU decoding (on)
   - use trickplay images to speed up scanning (on)
@@ -70,7 +64,7 @@ Go to **Dashboard → Plugins → AutoCrop**.
 ![The AutoCrop settings page](docs/images/settings.png)
 
 </details>
-- **Mode per series, film or episode:** the **Mode** column in the overview, and the **Series** filter to set a whole series at once. Useful for anime that use black bars as an effect in fight scenes (Black Clover, Jujutsu Kaisen): set them to **Static** so the picture doesn't zoom in during those scenes.
+- **Mode per series, film or episode:** the **Mode** column in the overview, and the **Series** filter to set a whole series at once. Series play the whole picture by default because many anime use black bars as an effect in fight scenes (Black Clover, Jujutsu Kaisen), and the theatre crop would cut the rest of the episode down to them. Set a series that is letterboxed for real to **Theatre crop**.
 
   A file uses its own mode, else its series', else its library's, else the default mode.
 
@@ -83,5 +77,5 @@ Files marked **suspicious** gave a result that doesn't look like any real film s
 
 ## More
 
-- [How it works](docs/how-it-works.md): detection, trickplay pre-check, per-scene logic, API and development.
+- [How it works](docs/how-it-works.md): detection, trickplay pre-check, the two crops, API and development.
 - [MIT license](LICENSE)

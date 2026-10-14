@@ -31,7 +31,7 @@ public class CropStoreTests : IDisposable
             FrameWidth = 1920,
             FrameHeight = 1080,
             Crop = new CropBox(0, 60, 1920, 960),
-            Segments = new List<CropSegment> { new(0, 10, new CropBox(0, 60, 1920, 960)), new(10, 20, CropBox.Full(1920, 1080)) },
+            TheatreCrop = new CropBox(0, 138, 1920, 804),
             ScannedAtUtc = DateTime.UtcNow,
         };
     }
@@ -46,7 +46,7 @@ public class CropStoreTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.Equal(result.Crop, loaded.Crop);
-        Assert.Equal(result.Segments, loaded.Segments);
+        Assert.Equal(result.TheatreCrop, loaded.TheatreCrop);
         Assert.Equal(result.FileModifiedUtc, loaded.FileModifiedUtc);
     }
 
@@ -171,25 +171,9 @@ public class CropStoreTests : IDisposable
         Assert.Equal(3012.48, loaded.Value.DurationSeconds);
         Assert.Equal(samples, loaded.Value.Samples);
         Assert.Null(loaded.Value.ThumbnailSize);
-        Assert.Null(loaded.Value.Refined);
         Assert.True(File.Exists(Path.Combine(_dir, "data", "samples", id.ToString("N") + ".json.gz")));
         Assert.False(File.Exists(_storePath));
         Assert.Null(store.GetSamples(Guid.NewGuid()));
-    }
-
-    [Fact]
-    public void Samples_KeepTheFramesDecodedAroundSwitchesBesideTheKeyframes()
-    {
-        var store = NewStore();
-        var id = Guid.NewGuid();
-        var keyframes = new List<KeyframeSample> { new(0, new CropBox(0, 60, 1920, 960)), new(2, new CropBox(0, 0, 1920, 1080)) };
-        var refined = new List<KeyframeSample> { new(0.958, new CropBox(0, 60, 1920, 960)), new(1.0, new CropBox(0, 0, 1920, 1080)) };
-
-        store.SetSamples(id, 10, keyframes, refined: refined);
-        var loaded = NewStore().GetSamples(id)!.Value;
-
-        Assert.Equal(keyframes, loaded.Samples);
-        Assert.Equal(refined, loaded.Refined);
     }
 
     [Fact]
@@ -228,13 +212,12 @@ public class CropStoreTests : IDisposable
     }
 
     [Fact]
-    public void HasCrop_FullFrameUnionWithCroppedSegments_StillCounts()
+    public void HasCrop_FullFrameWholePictureWithATheatreCrop_StillCounts()
     {
         var result = ResultFor(_video);
         result.Crop = CropBox.Full(1920, 1080);
 
         Assert.True(result.HasCrop);
-        Assert.True(result.IsPerScene);
     }
 
     [Fact]
@@ -242,12 +225,11 @@ public class CropStoreTests : IDisposable
     {
         var full = ResultFor(_video);
         full.Crop = CropBox.Full(1920, 1080);
-        full.Segments = null;
+        full.TheatreCrop = null;
         var failed = ResultFor(_video);
         failed.Error = "ffmpeg exited with code 1";
 
         Assert.False(full.HasCrop);
         Assert.False(failed.HasCrop);
-        Assert.False(failed.IsPerScene);
     }
 }

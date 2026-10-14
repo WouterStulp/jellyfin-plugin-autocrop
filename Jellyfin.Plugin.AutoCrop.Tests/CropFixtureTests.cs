@@ -17,12 +17,7 @@ public class CropFixtureTests
 
     private sealed record Fixture(int Width, int Height, IReadOnlyList<KeyframeSample> Samples, CropResult Result)
     {
-        public IReadOnlyList<CropSegment> Timeline
-            => Result.Segments ?? new List<CropSegment> { new(0, Samples.Max(s => s.Time), Result.Crop!) };
-
-        public double Duration => Timeline[^1].End;
-
-        public double Share(CropBox box) => Timeline.Where(s => s.Box == box).Sum(s => s.Duration) / Duration;
+        public CropBox Full => CropBox.Full(Width, Height);
     }
 
     private static Fixture Load(string name)
@@ -36,12 +31,13 @@ public class CropFixtureTests
 
         var config = new PluginConfiguration();
         var result = new CropResult { FrameWidth = parser.FrameWidth!.Value, FrameHeight = parser.FrameHeight!.Value, PixelAspect = parser.PixelAspect };
-        CropScanner.Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds));
+        CropScanner.Analyse(result, parser.Samples, new AnalyzerOptions(config.MinimumBarPercent));
         return new Fixture(result.FrameWidth, result.FrameHeight, parser.Samples, result);
     }
 
-    private static void AssertLetterbox(int top, int bottom, int width, CropBox box)
+    private static void AssertLetterbox(int top, int bottom, int width, CropBox? box)
     {
+        Assert.NotNull(box);
         Assert.Equal(0, box.X);
         Assert.Equal(width, box.Width);
         Assert.InRange(box.Y, top - 4, top + 4);
@@ -50,27 +46,23 @@ public class CropFixtureTests
 
     [Theory]
     [MemberData(nameof(AllFixtures))]
-    public void EveryKeyframesPicture_IsInsideItsSegment(string name)
+    public void TheWholePicture_ContainsEveryKeyframe(string name)
     {
         var fixture = Load(name);
 
         foreach (var sample in fixture.Samples.Where(s => s.Box != null))
-        {
-            var segment = fixture.Timeline.First(s => s.Start <= sample.Time && sample.Time <= s.End);
-            Assert.True(segment.Box.Contains(sample.Box!), $"{name} at {sample.Time}: {sample.Box} outside {segment.Box}");
-        }
+            Assert.True(fixture.Result.Crop!.Contains(sample.Box!), $"{name} at {sample.Time}: {sample.Box} outside {fixture.Result.Crop}");
     }
 
     [Theory]
     [MemberData(nameof(AllFixtures))]
-    public void RealFilms_AreNeverSuspicious(string name)
+    public void RealFilms_AreNeverSuspicious_AndBothCropsAreStandardShapes(string name)
     {
         var fixture = Load(name);
 
         Assert.Null(fixture.Result.SuspiciousReason);
-        Assert.All(fixture.Timeline, s => Assert.True(
-            s.Box == CropBox.Full(fixture.Width, fixture.Height) || CropAnalyzer.Snap(s.Box, fixture.Width, fixture.Height).Box == s.Box,
-            $"{name}: {s.Box} at {s.Start} isn't snapped"));
+        foreach (var box in new[] { fixture.Result.Crop!, fixture.Result.TheatreCrop! })
+            Assert.True(box == fixture.Full || CropAnalyzer.Snap(box, fixture.Width, fixture.Height).Box == box, $"{name}: {box} isn't snapped");
     }
 
     [Theory]
@@ -80,41 +72,38 @@ public class CropFixtureTests
     [InlineData("neagley")]
     [InlineData("peaky")]
     [InlineData("severance")]
-    public void OneShape_IsOneUncroppedSegment(string name)
+    public void OneShape_IsUncroppedInBothModes(string name)
     {
         var fixture = Load(name);
 
-        Assert.Null(fixture.Result.Segments);
-        Assert.Equal(CropBox.Full(fixture.Width, fixture.Height), fixture.Result.Crop);
+        Assert.Equal(fixture.Full, fixture.Result.Crop);
+        Assert.Equal(fixture.Full, fixture.Result.TheatreCrop);
         Assert.False(fixture.Result.HasCrop);
     }
 
     [Fact]
-    public void Shogun_BurnedInBars_AreOneCroppedSegment()
+    public void Shogun_BurnedInBars_AreCroppedInBothModes()
     {
         var fixture = Load("shogun");
 
-        Assert.Null(fixture.Result.Segments);
-        AssertLetterbox(56, 1020, 1920, fixture.Result.Crop!);
+        AssertLetterbox(56, 1020, 1920, fixture.Result.Crop);
+        Assert.Equal(fixture.Result.Crop, fixture.Result.TheatreCrop);
     }
 
+    /// <summary>
+    /// IMAX films switch between a scope picture and the full frame. The whole picture is the full
+    /// frame (nothing is ever cut); the theatre crop is the scope picture, as a regular cinema shows them.
+    /// </summary>
     [Theory]
-    [InlineData("interstellar", 140, 940, 0.30, 0.10)]
-    [InlineData("dunkirk", 102, 978, 0.20, 0.10)]
-    [InlineData("oppenheimer", 206, 1952, 0.30, 0.10)]
-    public void Imax_SwitchesBetweenItsScopeMatteAndTheFullFrame(string name, int top, int bottom, double minimumScope, double minimumFull)
+    [InlineData("interstellar", 140, 940)]
+    [InlineData("dunkirk", 102, 978)]
+    [InlineData("oppenheimer", 206, 1952)]
+    public void Imax_PlaysWholeInTheFullFrame_AndTheatreInItsScopePicture(string name, int top, int bottom)
     {
         var fixture = Load(name);
-        var full = CropBox.Full(fixture.Width, fixture.Height);
-        var segments = fixture.Result.Segments!;
-        var scope = segments.Select(s => s.Box).First(b => b != full);
 
-        Assert.InRange(segments.Count, 2, 99);
-        AssertLetterbox(top, bottom, fixture.Width, scope);
-        Assert.All(segments, s => Assert.True(s.Box == scope || s.Box == full, $"{s.Box} at {s.Start}"));
-        Assert.All(segments, s => Assert.True(s.Duration >= 30, $"{s.Duration} s at {s.Start}"));
-        Assert.True(fixture.Share(scope) > minimumScope, $"scope {fixture.Share(scope):P1}");
-        Assert.True(fixture.Share(full) > minimumFull, $"full frame {fixture.Share(full):P1}");
-        Assert.Equal(full, fixture.Result.Crop);
+        Assert.Equal(fixture.Full, fixture.Result.Crop);
+        AssertLetterbox(top, bottom, fixture.Width, fixture.Result.TheatreCrop);
+        Assert.True(fixture.Result.HasCrop);
     }
 }
