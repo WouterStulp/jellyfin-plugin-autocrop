@@ -17,7 +17,7 @@ The thumbnails can only ever conclude **no crop needed**. That takes all of:
 
 - at least 20 thumbnails with picture;
 - together they show picture in every row and column of the thumbnail, so there is less than one thumbnail pixel of bar on every side (one pixel is about 6 video pixels at 1080p, under the 1% minimum bar);
-- no per-scene matte: no letterbox or pillarbox recurs in at least 5% (and at least 5) of the thumbnails, as in an IMAX film that switches shape.
+- no recurring shape: no letterbox or pillarbox recurs in at least 5% (and at least 5) of the thumbnails, as in an IMAX film that switches shape.
 
 Such a file is recorded as uncropped with source `trickplay`; its thumbnail measurements are kept like keyframes, marked as thumbnail scale. Anything else goes to the keyframe scan: possible bars, possible mattes, too few thumbnails, no trickplay yet, or an ffmpeg failure. So does stale trickplay, made before the file was replaced: thumbnails older than the file, or thumbnail count × interval more than 10% or 60 seconds away from the runtime.
 
@@ -54,38 +54,16 @@ With Intel QSV on Linux this pass keeps the frames on the GPU until `select` has
 
 On a Pentium Gold 8505 that measured 5 minutes of an h264 Blu-ray remux in 23 s instead of 52 s, with byte-identical cropdetect output. The download format follows the pixel format the keyframe pass saw: `nv12` for 8-bit, `p010le` for 10-bit 4:2:0; any other format takes the usual path. The same trick on plain VAAPI surfaces (`-hwaccel_output_format vaapi`) silently dropped three quarters of the frames, so the QSV result is only used when ffmpeg succeeds and gives at least 90% of one sample per 2 seconds. Otherwise the file is measured the usual way. Results measured on keyframes before this pass existed (version 1.1), with fewer than one keyframe per minute of their stored duration, are dropped and measured again this way at startup, when the task runs, and on **Re-analyse all**.
 
-From those keyframes the plugin builds:
+From those keyframes the plugin builds two crops. Either one is a single crop for the whole file: nothing ever switches during playback.
 
-- **The whole-file crop:** the union of every keyframe's bounds (fully black keyframes are ignored). This is static mode and the fallback.
-- **The per-scene timeline:**
-  - First the file's real picture shapes, its mattes. A matte is a letterbox (full width, equal bars top and bottom) or a pillarbox (full height, equal bars left and right) that recurs: keyframes within 0.5% of the frame size of each other form a cluster, and a cluster counts when it holds at least 5% of the keyframes and at least 20 of them, with an aspect between 1.30 and 2.80. Its box is the union of the cluster. The whole-file crop is always a matte too, the widest one. An IMAX film has two (2.39:1 and the full frame), almost everything else one.
-  - Each keyframe gets the smallest matte that fully contains its bounds. Dark shots, title cards and credits give smaller, scattered bounds inside the real picture, so they land in their scene's matte instead of becoming a shape of their own. A keyframe that pokes out of every other matte gets the whole-file crop.
-  - Consecutive keyframes with the same matte form one segment. Fully black keyframes, such as fades, belong to their neighbours.
-  - The time between the last keyframe of one shape and the first of the next gets the union of both, so the switch to a larger picture always happens early enough. With the frames around the switch decoded (see below), that stretch is one frame long.
-  - Segments shorter than the minimum length are merged into the neighbour that loses the least zoom, always taking the larger box. A brief full-frame shot widens the crop instead of being cut.
-  - Every segment's box contains every keyframe inside it. The tests check this on keyframes measured from ten real films and episodes.
-  - A file with more than 200 segments falls back to the whole-file crop.
+- **The whole picture:** the union of every keyframe's bounds (fully black keyframes are ignored). Only a row or column that is black in every keyframe is cut, so no picture is ever lost. This is what `whole` mode plays.
+- **The theatre crop:** the narrowest letterbox shape the file keeps coming back to, which wider shots are cut to, as a regular cinema shows an IMAX film at its widescreen ratio throughout. A shape counts when keyframes within 0.5% of the frame size of each other form a cluster of at least 5% of the keyframes and at least 20 of them, with an aspect between 1.30 and 2.80; its box is the union of the cluster. Dark shots, title cards and credits give scattered boxes that never cluster. Only letterbox shapes count (full width, equal bars above and below): a pillarbox shape, like a 4:3 part of a 16:9 episode, only adds to the side bars on a wide screen, and cropping to it would cut the sides of everything else. A file with no letterbox shape narrower than the whole picture gets the whole picture. This is what `theatre` mode plays.
 
-Bars thinner than the minimum bar setting are dropped per side, both for the whole-file crop and for every segment.
-
-## Switches timed to the frame
-
-Keyframes are seconds apart (3 s on average in a 4K film, up to 10 s and more), so from the keyframes alone a switch is only known to lie somewhere between the last keyframe of one shape and the first of the next. Zooming out that early shows bars for those seconds, in the middle of a shot. So after the keyframe analysis, for a file with more than one matte, every such gap is decoded in full:
-
-```
-ffmpeg -hide_banner -nostats -nostdin [GPU decoding] -ss <last keyframe> -i <file> -t <gap + 0.1> -map 0:V:0 \
-       -vf cropdetect=limit=0.094:round=2:reset=1:skip=0 -an -sn -dn -f null -
-```
-
-ffmpeg seeks straight to that keyframe and decodes only the gap, one process per switch, at idle priority like the scan itself. Oppenheimer has about 250 switches and 21 minutes of gaps in all; on a GPU that is a few minutes, on a CPU 15 to 30. The frames are measured with the same cropdetect, their times are offset by the seek position, and the first and last frame of every run of equal bounds is kept (`refined` in the samples file, a few frames per switch). Fully black frames are dropped.
-
-The analysis then runs again with those frames in the timeline: the runs now end and begin on the frames of the cut, so a switch lands on it, zooming out on the last narrow frame and zooming in on the first. The mattes are still found from the keyframes alone, so a few hundred decoded frames can't make or tip a matte; they only widen the whole-file union when a frame pokes out of it. A gap over 120 s isn't decoded (files that sparse are measured every 2 seconds anyway), and a file with more than 500 switches keeps its switches on the keyframes: one ffmpeg per switch would take longer than the scan.
-
-A result records whether the pass ran (`refined`). Results from before it get it once: at startup, or when the task runs, every per-scene result is queued for the pass only, keeping its keyframes; a file without switches is marked done without ffmpeg. A GPU that can't decode the file falls back to the CPU for the rest of the switches; a switch whose ffmpeg fails stays on its keyframes.
+Bars thinner than the minimum bar setting are dropped per side from both crops.
 
 ## Standard aspect ratios
 
-Films and series are made in a handful of shapes: 1.33 (4:3), 1.375, 1.43, 1.66, 1.78 (16:9), 1.85, 1.90, 2.00, 2.20, 2.35, 2.39, 2.40, 2.55 and 2.76. After the measurement, the whole-file crop and every segment are snapped to the nearest of these:
+Films and series are made in a handful of shapes: 1.33 (4:3), 1.375, 1.43, 1.66, 1.78 (16:9), 1.85, 1.90, 2.00, 2.20, 2.35, 2.39, 2.40, 2.55 and 2.76. After the measurement, both crops are snapped to the nearest of these:
 
 - **Only outward.** The long side keeps its measured extent and the short side grows evenly around the measured box until the ratio matches (shifted inside the frame at an edge). A measured 1920×802 (2.394:1) becomes 1920×804 (2.39:1), one row more on each side. No measured picture is ever cut.
 - When the frame is too small to grow that far, the box stays as measured. 1920×961 would need 1922 columns for 2:1, so it stays 1920×961 (1.998:1).
@@ -93,18 +71,18 @@ Films and series are made in a handful of shapes: 1.33 (4:3), 1.375, 1.43, 1.66,
 
 A measurement is **suspicious** when no standard ratio lies within 1.5% of it, its ratio is outside 1.25–2.90, or it leaves less than half of the frame. Bogus boxes like that come from files that are almost entirely dark, or from a few unrepresentative frames.
 
-- A suspicious whole-file crop means **no crop** at all: the item plays uncropped, and the dashboard shows it as suspicious with the reason.
-- A suspicious segment gets the whole-file crop, which contains every keyframe.
+- A suspicious whole picture means **no crop** at all: the item plays uncropped in either mode, and the dashboard shows it as suspicious with the reason.
+- A suspicious theatre crop falls back to the whole picture.
 - The full frame (no bars) is never suspicious.
 
-On the ten real fixtures only Interstellar's 2.39:1 scenes change (1920×802 → 1920×804); the other crops already sit on a standard ratio or can't grow without leaving the frame.
+On the ten real fixtures only Interstellar's theatre crop changes (1920×802 → 1920×804); the other crops already sit on a standard ratio or can't grow without leaving the frame.
 
-Results are stored per item (path, file size and modification time, frame size, sample aspect ratio, crop, segments, scan time, analysis version, source, the suspicious reason, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film, with the frames decoded around each switch as rows of their own. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
+Results are stored per item (path, file size and modification time, frame size, sample aspect ratio, the two crops, scan time, analysis version, source, the suspicious reason, or the failure reason) in `crops.json` in the plugin's data folder. The raw keyframe bounds of each scan (time and `x1 x2 y1 y2`, or nothing for a black keyframe) are kept beside it in `samples/{itemId}.json.gz`, about 12 KB for a three-hour film. Each write goes through a temp file that is then moved into place. A changed file is scanned again.
 
 The keyframes make the analysis cheap to redo:
 
 - **Re-analyse all** recomputes every result from them with the current settings, without ffmpeg. Results settled by trickplay are checked against the same rule again; one that no longer passes is dropped and queued for the keyframe scan.
-- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection). Results whose switches haven't been timed to the frame are queued for that pass only.
+- When an update changes the analysis, results from the older version are recomputed at startup and when the task runs. Results scanned before keyframes were kept are queued for a scan instead, and so are keyframe results with too few keyframes (see Detection).
 - Keyframes are deleted together with the result when an item leaves the library.
 
 ## When scans run
@@ -120,10 +98,10 @@ The keyframes make the analysis cheap to redo:
 The plugin adds a small script to the web client's `index.html`. It does this at request time without changing any files, and also registers with the File Transformation plugin if that is installed. The script:
 
 1. Notices when the player starts or the item changes, such as the next episode or autoplay. With direct play the item id comes from the video URL. Transcoded (HLS) playback uses a `blob:` URL, so it asks Jellyfin's sessions API what this device is playing.
-2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see. The answer includes the item's mode: its own override, else its series', else its library's (found through Jellyfin's collection folders for the item), else the server default. Overrides are kept in the plugin configuration as `{Id, Mode}` pairs.
-3. Picks the mode. The browser keeps one on/off flag (`autocrop.enabled`): **Crop black bars** turns it on, Auto, Cover and Fill turn it off. While on, the item plays in the server's mode, unless the viewer pressed **c** for this series (or film): that choice is kept per series in `autocrop.series.{id}`. A server mode of `off` means the player does nothing until the viewer turns it on with **c** or **Crop black bars**. The old global `autocrop.mode` key is migrated once: `off` stays off, anything else becomes on.
+2. Fetches `GET /AutoCrop/Items/{id}` through Jellyfin's `ApiClient`, which is authenticated and respects a base URL. The server only answers for items the signed-in user may see. The answer includes both crops and the item's mode: its own override, else its series', else its library's (found through Jellyfin's collection folders for the item), else the server default for films or for episodes. Overrides are kept in the plugin configuration as `{Id, Mode}` pairs.
+3. Picks the mode: `theatre`, `whole` or `off`. The browser keeps one on/off flag (`autocrop.enabled`): **Crop black bars** turns it on, Auto, Cover and Fill turn it off. While on, the item plays in the server's mode, unless the viewer pressed **c** for this series (or film): that choice is kept per series in `autocrop.series.{id}`. A server mode of `off` means the player does nothing until the viewer turns it on with **c** or **Crop black bars**. Modes stored by earlier versions still work: `per-scene` reads as theatre, `static` as whole.
 4. Computes the zoom. Jellyfin shows the whole frame with `object-fit: contain` at scale `k = min(cw/fw, ch/fh)`. The picture area alone would fit at `k2 = min(cw/aw, ch/ah)`. The video is scaled by `s = k2 / k` around its centre and shifted so the centre of the picture area lands in the centre of the screen. Overflow is hidden by the player container.
-5. In per-scene mode, follows `currentTime` and applies each segment's box with a short CSS transition, also from and to the full frame. The first transform of an item and every seek jump instantly. It doesn't run per frame: on every playback event (`timeupdate`, seeking, play, pause, a rate change) it updates and sets one timer for the next segment boundary, from the position and the playback rate, so a switch lands within a few milliseconds of it. While playing, a check every second covers background tabs that throttle timers.
+5. Applies one transform for the whole item, the theatre crop or the whole picture by mode. Nothing follows the playback position, so nothing ever switches mid-film.
 6. Places subtitles. Native text cues are laid out inside the video element, so they are moved into the part of it that is still on screen. Styled subtitles draw on canvases beside the video: ASS/SSA on JavascriptSubtitlesOctopus' canvas (class `libassjs-canvas`), PGS and VobSub on libpgs' or libbitsub's (no class). Every canvas is kept over the whole frame as Jellyfin shows it without the zoom, since some renderers would place it from the zoomed video's bounds. The ASS canvas then gets exactly the video's transform around the same centre, so signs stay on their spot ("Zoom styled (ASS) subtitles with the picture", on by default). Bitmap subtitles stay on the unzoomed frame: they are often placed inside the black bars, and zooming them would push them off screen. A canvas that can't be identified is treated like a bitmap one. A mutation observer puts a canvas back when a renderer adds or moves it.
 7. Recalculates when the window or the player resizes and on fullscreen, and removes the zoom when playback stops, the item has no crop, the mode is off, or Jellyfin's aspect setting isn't Auto.
 
@@ -131,13 +109,13 @@ The plugin adds a small script to the web client's `index.html`. It does this at
 
 | Endpoint | Access | Purpose |
 | --- | --- | --- |
-| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | Crop, segments, the item's mode (`defaultMode`), the series (or movie) id a viewer's mode is kept for, and the transition, for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
+| `GET /AutoCrop/Items/{itemId}` | signed-in user who can see the item | The whole picture (`crop`), the theatre crop, the item's mode (`defaultMode`) and the series (or movie) id a viewer's mode is kept for, for the player. 404 when there is no result, no crop is needed, or the file changed since the scan. |
 | `POST /AutoCrop/Items/{itemId}/Rescan` | administrator | Drops the result and queues the item for a scan. |
 | `POST /AutoCrop/Reanalyse` | administrator | Recomputes every result from its stored keyframes with the current settings. Queues items without stored keyframes, and trickplay results that no longer pass, for a scan. |
 | `GET /AutoCrop/Stats` | administrator | Counts for the dashboard, including how many results were settled by trickplay and how many are suspicious. |
-| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `per-scene`, `no-bars`, `suspicious`, `failed`), each with its mode override. `series` lists series instead. |
+| `GET /AutoCrop/Results?filter=&search=&startIndex=&limit=` | administrator | Paged results for the dashboard (`filter`: `bars`, `no-bars`, `suspicious`, `failed`), each with its mode override. `series` lists series instead. |
 | `GET /AutoCrop/Libraries` | administrator | Movie, TV and mixed libraries with their mode. |
-| `POST /AutoCrop/Modes/{id}?mode=` | administrator | Sets the mode (`per-scene`, `static`, `off`) of a library, series, movie or episode. |
+| `POST /AutoCrop/Modes/{id}?mode=` | administrator | Sets the mode (`theatre`, `whole`, `off`) of a library, series, movie or episode. |
 | `DELETE /AutoCrop/Modes/{id}` | administrator | Clears it, so it inherits again. |
 | `GET /AutoCrop/Web/autocrop.js` | anonymous | The player script. |
 
@@ -154,7 +132,7 @@ node test/crop-math.test.js
 
 The end-to-end detection tests generate small clips with ffmpeg and run a real cropdetect pass over them: bars on every keyframe (8-bit and 10-bit), a clip with a full-frame part, a clip that switches between 2.39:1 and 1.90:1, a clip whose only keyframe is the first frame, and an unreadable file. The trickplay tests make sheets from generated clips the way Jellyfin does (`fps=1/10`, 320 px wide, `tile=10x10`) in a folder laid out like Jellyfin's: a clean clip is settled by trickplay, a clip with bars and a shape-switching clip get the keyframe scan, and so do missing and stale trickplay. They run when `ffmpeg` is on the `PATH` (or set `AUTOCROP_FFMPEG`) and are skipped otherwise. CI installs ffmpeg so they always run there.
 
-`Jellyfin.Plugin.AutoCrop.Tests/Fixtures` holds the keyframe output of the plugin's ffmpeg command on ten real films and episodes (IMAX releases that switch shape, a scope-only release, and episodes with dark scenes and credits). The analysis is tested on them: one segment for the episodes, the right mattes for the IMAX films, and no keyframe's picture ever outside its segment.
+`Jellyfin.Plugin.AutoCrop.Tests/Fixtures` holds the keyframe output of the plugin's ffmpeg command on ten real films and episodes (IMAX releases that switch shape, a scope-only release, and episodes with dark scenes and credits). The analysis is tested on them: no crop for the episodes without bars, Shogun's burned-in bars in both crops, and for the IMAX films the full frame as the whole picture and the scope shape as the theatre crop.
 
 The plugin targets net9.0 against the Jellyfin 10.11.9 SDK. That one build loads on 10.11 and on 12.x servers. `targetAbi.txt` must equal the SDK package version.
 

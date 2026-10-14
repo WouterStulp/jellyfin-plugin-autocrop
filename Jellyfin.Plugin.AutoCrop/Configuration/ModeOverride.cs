@@ -8,6 +8,6 @@ public class ModeOverride
     /// <summary>The library (collection folder), series or video it applies to.</summary>
     public Guid Id { get; set; }
 
-    /// <summary>"per-scene", "static" or "off".</summary>
-    public string Mode { get; set; } = CropModes.PerScene;
+    /// <summary>"theatre", "whole" or "off".</summary>
+    public string Mode { get; set; } = CropModes.Theatre;
 }

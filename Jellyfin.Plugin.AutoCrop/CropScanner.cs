@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -31,10 +30,6 @@ public class CropScanner
 
     // The first frame, then every frame at least 2 s after the last one picked.
     private const string EveryTwoSeconds = @"select='isnan(prev_selected_t)+gte(t-prev_selected_t\,2)'";
-
-    // A file that switches shape more often than this (black bars as a style, every other shot) gets
-    // no frame-exact switches: one ffmpeg per switch would take longer than the scan itself.
-    internal const int MaxWindows = 500;
 
     private readonly IConfigurationManager _configurationManager;
     private readonly ITrickplayManager _trickplayManager;
@@ -68,21 +63,14 @@ public class CropScanner
             && !string.Equals(Path.GetExtension(item.Path), ".strm", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Eligible, on disk, and without a complete result for the file as it is now. An outdated result
-    /// that had stored keyframes was already re-analysed by <see cref="Reanalyse"/>, so what is left
-    /// needs ffmpeg again: a scan, or only the pass that times the switches.
+    /// Eligible, on disk, and without a result for the file as it is now (failed ones included) from
+    /// the current analysis. An outdated result that had stored keyframes was already re-analysed by
+    /// <see cref="Reanalyse"/>, so what is left needs ffmpeg again.
     /// </summary>
     public bool NeedsScan(BaseItem item)
         => IsEligible(item)
             && File.Exists(item.Path)
-            && !(_store.GetCurrent(item.Id, item.Path) is { } result && IsComplete(result));
-
-    /// <summary>
-    /// From the current analysis, with the switches timed to the frame (or nothing to time). A failed
-    /// scan is complete too: it isn't retried until the file changes.
-    /// </summary>
-    internal static bool IsComplete(CropResult result)
-        => result.AnalysisVersion >= CropAnalyzer.Version && (result.Failed || result.Refined);
+            && _store.GetCurrent(item.Id, item.Path) is not { AnalysisVersion: >= CropAnalyzer.Version };
 
     /// <summary>
     /// Fewer than one keyframe per minute of a file of at least 2 minutes: some remuxes flag only a
@@ -94,32 +82,23 @@ public class CropScanner
     internal static AnalyzerOptions Options()
     {
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-        return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds);
+        return new AnalyzerOptions(config.MinimumBarPercent);
     }
 
     /// <summary>
-    /// Fills in a result's crop and segments from its keyframes and the frames decoded around each
-    /// switch (<paramref name="refined"/>), snapped outward to standard aspect ratios. A suspicious
-    /// whole-file picture means no crop at all, with the reason.
+    /// Fills in a result's two crops from its keyframes, snapped outward to standard aspect ratios. A
+    /// suspicious whole picture means no crop at all, with the reason; a suspicious theatre crop falls
+    /// back to the whole picture.
     /// </summary>
-    internal static void Analyse(
-        CropResult result,
-        IReadOnlyList<KeyframeSample> samples,
-        double durationSeconds,
-        AnalyzerOptions options,
-        IReadOnlyList<KeyframeSample>? refined = null)
+    internal static void Analyse(CropResult result, IReadOnlyList<KeyframeSample> samples, AnalyzerOptions options)
     {
         var (width, height, pixelAspect) = (result.FrameWidth, result.FrameHeight, result.PixelAspect ?? 1);
-        var union = CropAnalyzer.Union(refined == null ? samples : samples.Concat(refined), width, height, options.MinimumBarPercent);
-        var (crop, suspicious) = CropAnalyzer.Snap(union, width, height, pixelAspect);
-        var segments = suspicious != null
-            ? Array.Empty<CropSegment>()
-            : CropAnalyzer.SnapSegments(
-                CropAnalyzer.Segments(samples, width, height, durationSeconds, options, refined), crop, width, height, pixelAspect);
+        var (crop, suspicious) = CropAnalyzer.Snap(CropAnalyzer.Union(samples, width, height, options.MinimumBarPercent), width, height, pixelAspect);
+        var (theatre, theatreSuspicious) = CropAnalyzer.Snap(CropAnalyzer.TheatreCrop(samples, width, height, options), width, height, pixelAspect);
 
         result.Keyframes = samples.Count;
         result.Crop = suspicious != null ? CropBox.Full(width, height) : crop;
-        result.Segments = segments.Count > 1 ? segments.ToList() : null;
+        result.TheatreCrop = suspicious != null || theatreSuspicious != null ? result.Crop : theatre;
         result.SuspiciousReason = suspicious;
         result.AnalysisVersion = CropAnalyzer.Version;
     }
@@ -130,8 +109,7 @@ public class CropScanner
     /// Results settled by trickplay are checked against the same rule again; one that no longer passes
     /// is dropped, so it gets the exact scan. So is a keyframe result with too few keyframes, measured
     /// before such files got the 2-second pass. Returns how many were recomputed and the items that
-    /// need ffmpeg: those without stored keyframes, the dropped results, and results whose switches
-    /// haven't been timed to the frame yet, which <see cref="ScanAsync"/> gives only that pass.
+    /// need a scan: those without stored keyframes and the dropped results.
     /// </summary>
     public (int Reanalysed, IReadOnlyList<Guid> NeedScan) Reanalyse(bool outdatedOnly)
     {
@@ -147,7 +125,6 @@ public class CropScanner
                 {
                     var still = result.Copy();
                     still.AnalysisVersion = CropAnalyzer.Version;
-                    still.Refined = true;
                     updates.Add((result, still));
                 }
                 else
@@ -174,12 +151,8 @@ public class CropScanner
             }
 
             var updated = result.Copy();
-            Analyse(updated, stored.Value.Samples, stored.Value.DurationSeconds, options, stored.Value.Refined);
-            updated.Refined = stored.Value.Refined != null
-                || CropAnalyzer.SwitchWindows(stored.Value.Samples, updated.FrameWidth, updated.FrameHeight, options).Count == 0;
+            Analyse(updated, stored.Value.Samples, options);
             updates.Add((result, updated));
-            if (!updated.Refined)
-                needScan.Add(result.ItemId);
         }
 
         _store.Replace(updates);
@@ -212,26 +185,6 @@ public class CropScanner
                 "-vf", !everyTwoSeconds ? Cropdetect
                     : hardwareDownload != null ? $"{EveryTwoSeconds},hwdownload,format={hardwareDownload},{Cropdetect}"
                     : $"{EveryTwoSeconds},{Cropdetect}",
-                "-an", "-sn", "-dn",
-                "-f", "null", "-",
-            })
-            .ToArray();
-
-    /// <summary>
-    /// Every frame of one switch window: from the keyframe at <paramref name="start"/> (ffmpeg seeks
-    /// to the keyframe at or before it and discards the rest) to just past <paramref name="end"/>.
-    /// cropdetect's times count from the seek position.
-    /// </summary>
-    internal static IReadOnlyList<string> RefineArguments(string path, IReadOnlyList<string>? hardwareDecoding, double start, double end)
-        => new[] { "-hide_banner", "-nostats", "-nostdin" }
-            .Concat(hardwareDecoding ?? Array.Empty<string>())
-            .Concat(new[]
-            {
-                "-ss", start.ToString("0.000", CultureInfo.InvariantCulture),
-                "-i", path,
-                "-t", (end - start + 0.1).ToString("0.000", CultureInfo.InvariantCulture),
-                "-map", "0:V:0",
-                "-vf", Cropdetect,
                 "-an", "-sn", "-dn",
                 "-f", "null", "-",
             })
@@ -320,17 +273,13 @@ public class CropScanner
         try
         {
             // The scheduled task and the queue can pick the same item; the second one finds it done.
-            var current = _store.GetCurrent(item.Id, item.Path);
-            if (current != null && IsComplete(current))
+            if (_store.GetCurrent(item.Id, item.Path) is { AnalysisVersion: >= CropAnalyzer.Version } current)
             {
                 _logger.LogDebug("AutoCrop: {Name} was scanned in the meantime", item.Name);
                 return current;
             }
 
-            // A result that only lacks the frame-exact switches keeps its keyframes.
-            var result = current is { Failed: false } && _store.GetSamples(item.Id) is { ThumbnailSize: null } stored
-                ? await RefineOnlyAsync(item, current, stored.DurationSeconds, stored.Samples, stored.Refined, cancellationToken).ConfigureAwait(false)
-                : await MeasureAsync(item, cancellationToken).ConfigureAwait(false);
+            var result = await MeasureAsync(item, cancellationToken).ConfigureAwait(false);
             _store.Set(result);
             return result;
         }
@@ -368,7 +317,6 @@ public class CropScanner
         if ((Plugin.Instance?.Configuration.UseTrickplay ?? true)
             && await TrickplayShowsNoBarsAsync(item, result, cancellationToken).ConfigureAwait(false))
         {
-            result.Refined = true;
             _logger.LogInformation(
                 "AutoCrop scanned {Name}: no bars in {Thumbnails} trickplay thumbnails in {Seconds:0.0}s, skipped the keyframe scan",
                 item.Name, result.Keyframes, watch.Elapsed.TotalSeconds);
@@ -407,99 +355,13 @@ public class CropScanner
         result.FrameWidth = width;
         result.FrameHeight = height;
         result.PixelAspect = parser.PixelAspect;
-        var options = Options();
-        Analyse(result, parser.Samples, duration, options);
-        var refined = await RefineAsync(item, result, parser.Samples, hardware, options, cancellationToken).ConfigureAwait(false);
-        if (refined != null)
-            Analyse(result, parser.Samples, duration, options, refined);
-        result.Refined = true;
-        _store.SetSamples(item.Id, duration, parser.Samples, refined: refined);
+        Analyse(result, parser.Samples, Options());
+        _store.SetSamples(item.Id, duration, parser.Samples);
 
         _logger.LogInformation(
-            "AutoCrop scanned {Name}: {Keyframes} {Source} in {Seconds:0}s, frame {Width}x{Height}, picture {Crop}, {Segments} segment(s)",
-            item.Name, result.Keyframes, result.AnalysisSource, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.Segments?.Count ?? 1);
+            "AutoCrop scanned {Name}: {Keyframes} {Source} in {Seconds:0}s, frame {Width}x{Height}, whole picture {Crop}, theatre crop {Theatre}",
+            item.Name, result.Keyframes, result.AnalysisSource, watch.Elapsed.TotalSeconds, width, height, result.Crop, result.TheatreCrop);
         return result;
-    }
-
-    /// <summary>
-    /// The pass that times the switches, for a result whose keyframes are already stored: results from
-    /// before the pass existed, or one that was interrupted. Nothing else is measured again.
-    /// </summary>
-    private async Task<CropResult> RefineOnlyAsync(
-        BaseItem item,
-        CropResult current,
-        double durationSeconds,
-        IReadOnlyList<KeyframeSample> samples,
-        IReadOnlyList<KeyframeSample>? refined,
-        CancellationToken cancellationToken)
-    {
-        var options = Options();
-        var result = current.Copy();
-        var encoding = Plugin.Instance?.Configuration.HardwareDecoding == false
-            ? null
-            : _configurationManager.GetConfiguration("encoding") as EncodingOptions;
-        refined ??= await RefineAsync(item, result, samples, HardwareDecodingArguments(encoding), options, cancellationToken).ConfigureAwait(false);
-        Analyse(result, samples, durationSeconds, options, refined);
-        result.Refined = true;
-        _store.SetSamples(item.Id, durationSeconds, samples, refined: refined);
-        return result;
-    }
-
-    /// <summary>
-    /// Decodes every frame between the two keyframes around each shape switch, so the switch can be
-    /// put on the frame of the cut. One ffmpeg per switch, seeking straight to it. Null when the file
-    /// has no switches; a switch whose ffmpeg fails is left as it was, on its keyframes.
-    /// </summary>
-    private async Task<IReadOnlyList<KeyframeSample>?> RefineAsync(
-        BaseItem item,
-        CropResult result,
-        IReadOnlyList<KeyframeSample> samples,
-        IReadOnlyList<string>? hardware,
-        AnalyzerOptions options,
-        CancellationToken cancellationToken)
-    {
-        var windows = CropAnalyzer.SwitchWindows(samples, result.FrameWidth, result.FrameHeight, options);
-        if (windows.Count == 0)
-            return null;
-
-        if (windows.Count > MaxWindows)
-        {
-            _logger.LogInformation("AutoCrop: {Name} switches shape {Count} times, leaving the switches on their keyframes", item.Name, windows.Count);
-            return Array.Empty<KeyframeSample>();
-        }
-
-        var watch = Stopwatch.StartNew();
-        var refined = new List<KeyframeSample>();
-        var failed = 0;
-        foreach (var (start, end) in windows)
-        {
-            // A hair early, so the keyframe at start is never dropped by the seek.
-            var seek = Math.Max(0, start - 0.001);
-            var parser = new CropdetectParser();
-            var (exitCode, lastLine) = await RunFfmpegAsync(RefineArguments(item.Path, hardware, seek, end), parser, cancellationToken).ConfigureAwait(false);
-            if (hardware != null && (exitCode != 0 || parser.Samples.Count == 0))
-            {
-                _logger.LogInformation("AutoCrop: GPU decoding failed for {Path} ({LastLine}), timing the switches on the CPU", item.Path, lastLine);
-                hardware = null;
-                parser = new CropdetectParser();
-                (exitCode, lastLine) = await RunFfmpegAsync(RefineArguments(item.Path, null, seek, end), parser, cancellationToken).ConfigureAwait(false);
-            }
-
-            if (exitCode != 0 || parser.Samples.Count == 0)
-            {
-                failed++;
-                _logger.LogDebug("AutoCrop could not decode {Path} at {Start}s: {LastLine}", item.Path, start, lastLine);
-                continue;
-            }
-
-            refined.AddRange(CropAnalyzer.Compact(parser.Samples.Select(s => s with { Time = seek + s.Time })));
-        }
-
-        if (failed > 0)
-            _logger.LogWarning("AutoCrop could not time {Failed} of {Count} shape switches of {Path}", failed, windows.Count, item.Path);
-        _logger.LogInformation(
-            "AutoCrop timed {Count} shape switch(es) of {Name} to the frame in {Seconds:0}s", windows.Count - failed, item.Name, watch.Elapsed.TotalSeconds);
-        return refined;
     }
 
     /// <summary>
@@ -565,7 +427,7 @@ public class CropScanner
             result.FrameWidth = item.Width;
             result.FrameHeight = item.Height;
             result.Crop = CropBox.Full(item.Width, item.Height);
-            result.Segments = null;
+            result.TheatreCrop = result.Crop;
             result.Keyframes = thumbnails.Count;
             result.AnalysisSource = AnalysisSources.Trickplay;
             _store.SetSamples(item.Id, TimeSpan.FromTicks(item.RunTimeTicks ?? 0).TotalSeconds, thumbnails, (width, height));

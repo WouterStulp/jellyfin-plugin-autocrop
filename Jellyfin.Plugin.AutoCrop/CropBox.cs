@@ -40,15 +40,5 @@ public sealed record CropBox(
             && Math.Abs(Bottom - other.Bottom) <= toleranceY;
 }
 
-/// <summary>A stretch of the file, in seconds from its start, that shows one picture shape.</summary>
-public sealed record CropSegment(
-    [property: JsonPropertyName("start")] double Start,
-    [property: JsonPropertyName("end")] double End,
-    [property: JsonPropertyName("box")] CropBox Box)
-{
-    [JsonIgnore]
-    public double Duration => End - Start;
-}
-
 /// <summary>One keyframe's cropdetect bounds. Box is null for a fully black keyframe.</summary>
 public sealed record KeyframeSample(double Time, CropBox? Box);

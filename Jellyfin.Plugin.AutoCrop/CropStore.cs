@@ -124,19 +124,14 @@ public class CropStore
     /// <summary>
     /// Stores a scan's keyframes as rows of [t, x1, x2, y1, y2] in cropdetect's inclusive bounds, or
     /// [t] for a fully black keyframe, plus the file's duration. Trickplay thumbnails are stored the
-    /// same way with their <paramref name="thumbnailSize"/>, which marks them as thumbnail scale. The
-    /// frames decoded around each shape switch (<paramref name="refined"/>) are kept as rows of their own.
+    /// same way with their <paramref name="thumbnailSize"/>, which marks them as thumbnail scale.
     /// </summary>
     public void SetSamples(
-        Guid itemId,
-        double durationSeconds,
-        IReadOnlyList<KeyframeSample> samples,
-        (int Width, int Height)? thumbnailSize = null,
-        IReadOnlyList<KeyframeSample>? refined = null)
+        Guid itemId, double durationSeconds, IReadOnlyList<KeyframeSample> samples, (int Width, int Height)? thumbnailSize = null)
     {
         var path = SamplesPath(itemId);
         var tmp = path + ".tmp";
-        var file = new SamplesFile(durationSeconds, Rows(samples), thumbnailSize?.Width, thumbnailSize?.Height, refined == null ? null : Rows(refined));
+        var file = new SamplesFile(durationSeconds, Rows(samples), thumbnailSize?.Width, thumbnailSize?.Height);
         try
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
@@ -153,10 +148,9 @@ public class CropStore
 
     /// <summary>
     /// The stored keyframes of an item and its duration, or null when there are none. ThumbnailSize is
-    /// set when they are trickplay thumbnails rather than video frames. Refined holds the frames decoded
-    /// around each shape switch, null when that pass hasn't run.
+    /// set when they are trickplay thumbnails rather than video frames.
     /// </summary>
-    public (double DurationSeconds, IReadOnlyList<KeyframeSample> Samples, (int Width, int Height)? ThumbnailSize, IReadOnlyList<KeyframeSample>? Refined)? GetSamples(Guid itemId)
+    public (double DurationSeconds, IReadOnlyList<KeyframeSample> Samples, (int Width, int Height)? ThumbnailSize)? GetSamples(Guid itemId)
     {
         var path = SamplesPath(itemId);
         try
@@ -171,7 +165,7 @@ public class CropStore
                 return null;
 
             var thumbnailSize = file is { ThumbnailWidth: { } w, ThumbnailHeight: { } h } ? (w, h) : ((int, int)?)null;
-            return (file.Duration, Samples(file.Keyframes), thumbnailSize, file.Refined == null ? null : Samples(file.Refined));
+            return (file.Duration, Samples(file.Keyframes), thumbnailSize);
         }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException or UnauthorizedAccessException)
         {
@@ -261,6 +255,5 @@ public class CropStore
         }
     }
 
-    private sealed record SamplesFile(
-        double Duration, List<double[]> Keyframes, int? ThumbnailWidth = null, int? ThumbnailHeight = null, List<double[]>? Refined = null);
+    private sealed record SamplesFile(double Duration, List<double[]> Keyframes, int? ThumbnailWidth = null, int? ThumbnailHeight = null);
 }

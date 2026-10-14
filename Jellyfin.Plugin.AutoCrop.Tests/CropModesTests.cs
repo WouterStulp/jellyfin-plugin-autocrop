@@ -16,20 +16,29 @@ public class CropModesTests
     public void Effective_ItemBeatsSeriesBeatsLibraryBeatsServer()
     {
         var scopes = new[] { Item, Series, Library };
-        var all = Overrides((Library, "off"), (Series, "static"), (Item, "per-scene"));
+        var all = Overrides((Library, "off"), (Series, "whole"), (Item, "theatre"));
 
-        Assert.Equal("per-scene", CropModes.Effective(all, "off", scopes));
-        Assert.Equal("static", CropModes.Effective(all.Where(o => o.Id != Item).ToList(), "off", scopes));
-        Assert.Equal("off", CropModes.Effective(Overrides((Library, "off")), "per-scene", scopes));
-        Assert.Equal("static", CropModes.Effective(Overrides(), "static", scopes));
-        Assert.Equal("static", CropModes.Effective(Overrides((Guid.NewGuid(), "off")), "static", scopes));
+        Assert.Equal("theatre", CropModes.Effective(all, "off", scopes));
+        Assert.Equal("whole", CropModes.Effective(all.Where(o => o.Id != Item).ToList(), "off", scopes));
+        Assert.Equal("off", CropModes.Effective(Overrides((Library, "off")), "theatre", scopes));
+        Assert.Equal("whole", CropModes.Effective(Overrides(), "whole", scopes));
+        Assert.Equal("whole", CropModes.Effective(Overrides((Guid.NewGuid(), "off")), "whole", scopes));
     }
 
     [Fact]
-    public void Effective_UnknownModes_ArePerScene()
+    public void Effective_UnknownModes_AreTheatre()
     {
-        Assert.Equal("per-scene", CropModes.Effective(Overrides(), null, new[] { Item }));
-        Assert.Equal("per-scene", CropModes.Effective(Overrides((Item, "zoom")), "off", new[] { Item }));
+        Assert.Equal("theatre", CropModes.Effective(Overrides(), null, new[] { Item }));
+        Assert.Equal("theatre", CropModes.Effective(Overrides((Item, "zoom")), "off", new[] { Item }));
+    }
+
+    [Fact]
+    public void Effective_ModesFromBeforeThisVersion_MapOntoTheNewOnes()
+    {
+        // Per scene followed the scenes, theatre is the closest; static was one crop that never cut, which is whole.
+        Assert.Equal("theatre", CropModes.Effective(Overrides((Item, "per-scene")), "off", new[] { Item }));
+        Assert.Equal("whole", CropModes.Effective(Overrides((Item, "static")), "off", new[] { Item }));
+        Assert.Equal("whole", CropModes.Effective(Overrides(), "static", new[] { Item }));
     }
 
     [Fact]
@@ -43,16 +52,18 @@ public class CropModesTests
             yield return Library;
         }
 
-        CropModes.Effective(Overrides((Item, "static")), "off", Scopes());
+        CropModes.Effective(Overrides((Item, "whole")), "off", Scopes());
         Assert.False(librariesLookedUp);
         CropModes.Effective(Overrides(), "off", Scopes());
         Assert.False(librariesLookedUp);
     }
 
     [Theory]
-    [InlineData("per-scene", true)]
-    [InlineData("static", true)]
+    [InlineData("theatre", true)]
+    [InlineData("whole", true)]
     [InlineData("off", true)]
+    [InlineData("per-scene", false)]
+    [InlineData("static", false)]
     [InlineData("inherit", false)]
     [InlineData(null, false)]
     public void IsValid_OnlyTheThreeModes(string? mode, bool expected)
@@ -63,13 +74,13 @@ public class CropModesTests
     [Fact]
     public void Overrides_SurviveTheXmlConfiguration()
     {
-        var config = new PluginConfiguration { ModeOverrides = Overrides((Series, "static"), (Library, "off")) };
+        var config = new PluginConfiguration { ModeOverrides = Overrides((Series, "whole"), (Library, "off")) };
         var serializer = new XmlSerializer(typeof(PluginConfiguration));
         using var xml = new StringWriter();
 
         serializer.Serialize(xml, config);
         var read = (PluginConfiguration)serializer.Deserialize(new StringReader(xml.ToString()))!;
 
-        Assert.Equal(new[] { (Series, "static"), (Library, "off") }, read.ModeOverrides.Select(o => (o.Id, o.Mode)));
+        Assert.Equal(new[] { (Series, "whole"), (Library, "off") }, read.ModeOverrides.Select(o => (o.Id, o.Mode)));
     }
 }

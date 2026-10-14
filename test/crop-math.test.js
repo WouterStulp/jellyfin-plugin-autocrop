@@ -91,38 +91,6 @@ var tests = {
         near(scaled.scale, full.scale, 'same zoom at 720p');
     },
 
-    'segmentAt finds the segment for a time and clamps outside the timeline': function () {
-        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }, { start: 900, end: 1500 }];
-        assert.strictEqual(crop.segmentAt(segments, 0), 0);
-        assert.strictEqual(crop.segmentAt(segments, 597.9), 0);
-        assert.strictEqual(crop.segmentAt(segments, 598), 1);
-        assert.strictEqual(crop.segmentAt(segments, 899.99), 1);
-        assert.strictEqual(crop.segmentAt(segments, 900), 2);
-        assert.strictEqual(crop.segmentAt(segments, 99999), 2);
-        assert.strictEqual(crop.segmentAt(segments, -1), 0);
-        assert.strictEqual(crop.segmentAt([{ start: 0, end: 10 }], 5), 0);
-    },
-
-    'the next boundary is the next segment start, at the playback rate, just past it': function () {
-        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }, { start: 900, end: 1500 }];
-        var exact = 8000;
-        var delay = crop.nextBoundaryDelay(segments, 590, 1);
-        assert.ok(delay >= exact && delay - exact <= 100, 'within 100 ms after the boundary: ' + delay);
-        near(crop.nextBoundaryDelay(segments, 590, 2), crop.nextBoundaryDelay(segments, 590, 1) - exact / 2, 'twice as fast');
-        near(crop.nextBoundaryDelay(segments, 598, 1) - crop.nextBoundaryDelay(segments, 590, 1), 302000 - exact, 'at a boundary: the next one');
-        near(crop.nextBoundaryDelay(segments, -5, 1) - crop.nextBoundaryDelay(segments, 590, 1), 598000 + 5000 - exact, 'before the start');
-    },
-
-    'no boundary ahead means no timer': function () {
-        var segments = [{ start: 0, end: 598 }, { start: 598, end: 900 }];
-        assert.strictEqual(crop.nextBoundaryDelay(segments, 650, 1), null, 'last segment');
-        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, 0), null, 'rate 0');
-        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, -1), null, 'reverse');
-        assert.strictEqual(crop.nextBoundaryDelay(segments, 100, NaN), null, 'unknown rate');
-        assert.strictEqual(crop.nextBoundaryDelay([{ start: 0, end: 900 }], 100, 1), null, 'one segment');
-        assert.strictEqual(crop.nextBoundaryDelay(null, 100, 1), null, 'static file');
-    },
-
     'ASS/SSA canvases zoom with the video, bitmap and unknown canvases never do': function () {
         var css = 'translate(0.00px, 0.00px) scale(1.3333)';
         assert.strictEqual(crop.canvasTransform('libassjs-canvas', css, true), css, 'JavascriptSubtitlesOctopus');
@@ -134,17 +102,20 @@ var tests = {
         assert.strictEqual(crop.canvasTransform('libassjs-canvas-parent', css, true), '', 'only the canvas itself');
     },
 
-    'a scene switch animates, also to and from the full frame; the first transform, a seek and off jump': function () {
-        assert.strictEqual(crop.transitionCss(300, false, true), 'transform 300ms ease-in-out', 'between two scenes');
-        assert.strictEqual(crop.transitionCss(300, false, false), '', 'first transform of an item');
-        assert.strictEqual(crop.transitionCss(300, true, true), '', 'seeking');
-        assert.strictEqual(crop.transitionCss(0, false, true), '', 'turned off, or transition set to 0');
+    'the c key cycles theatre, whole, off': function () {
+        assert.strictEqual(crop.nextMode('theatre'), 'whole');
+        assert.strictEqual(crop.nextMode('whole'), 'off');
+        assert.strictEqual(crop.nextMode('off'), 'theatre');
     },
 
-    'the c key cycles per-scene, static, off': function () {
-        assert.strictEqual(crop.nextMode('per-scene'), 'static');
-        assert.strictEqual(crop.nextMode('static'), 'off');
-        assert.strictEqual(crop.nextMode('off'), 'per-scene');
+    'modes stored by earlier versions map onto the new ones': function () {
+        assert.strictEqual(crop.normalizeMode('per-scene'), 'theatre', 'followed the scenes: theatre is the closest');
+        assert.strictEqual(crop.normalizeMode('static'), 'whole', 'one crop that never cut');
+        assert.strictEqual(crop.normalizeMode('theatre'), 'theatre');
+        assert.strictEqual(crop.normalizeMode('whole'), 'whole');
+        assert.strictEqual(crop.normalizeMode('off'), 'off');
+        assert.strictEqual(crop.normalizeMode('zoom'), null);
+        assert.strictEqual(crop.normalizeMode(null), null);
     },
 
     'the aspect-ratio sheet is recognised by its option ids, in any order and language': function () {
@@ -158,65 +129,31 @@ var tests = {
         assert.ok(!crop.isAspectSheet(null));
     },
 
-    'the extended aspect sheet is moved up only when it would leave the window': function () {
-        assert.strictEqual(crop.fitTop(900, 170, 1080, 10), 900, 'fits: unchanged');
-        assert.strictEqual(crop.fitTop(940, 170, 1080, 10), 900, 'overflows by 30: moved up');
-        assert.strictEqual(crop.fitTop(5, 2000, 1080, 10), 10, 'taller than the window: pinned to the top');
-    },
-
     'Crop black bars keeps the chosen mode, else the server default, never off': function () {
-        assert.strictEqual(crop.enabledMode('static', 'per-scene'), 'static');
-        assert.strictEqual(crop.enabledMode('off', 'static'), 'static');
-        assert.strictEqual(crop.enabledMode('off', 'off'), 'per-scene');
-        assert.strictEqual(crop.enabledMode('off', null), 'per-scene');
+        assert.strictEqual(crop.enabledMode('whole', 'theatre'), 'whole');
+        assert.strictEqual(crop.enabledMode('off', 'whole'), 'whole');
+        assert.strictEqual(crop.enabledMode('off', 'static'), 'whole', 'a server default from an earlier version');
+        assert.strictEqual(crop.enabledMode('off', 'off'), 'theatre');
+        assert.strictEqual(crop.enabledMode('off', null), 'theatre');
     },
 
     'the viewer turning cropping off beats everything': function () {
-        assert.strictEqual(crop.effectiveMode(false, 'static', 'per-scene'), 'off');
-        assert.strictEqual(crop.effectiveMode(false, null, 'per-scene'), 'off');
+        assert.strictEqual(crop.effectiveMode(false, 'whole', 'theatre'), 'off');
+        assert.strictEqual(crop.effectiveMode(false, null, 'theatre'), 'off');
     },
 
     'while on, the series choice beats the server mode': function () {
-        assert.strictEqual(crop.effectiveMode(true, 'static', 'per-scene'), 'static');
-        assert.strictEqual(crop.effectiveMode(true, 'per-scene', 'off'), 'per-scene', 'the viewer turned an off series on');
-        assert.strictEqual(crop.effectiveMode(true, 'off', 'per-scene'), 'off');
+        assert.strictEqual(crop.effectiveMode(true, 'whole', 'theatre'), 'whole');
+        assert.strictEqual(crop.effectiveMode(true, 'theatre', 'off'), 'theatre', 'the viewer turned an off series on');
+        assert.strictEqual(crop.effectiveMode(true, 'off', 'theatre'), 'off');
+        assert.strictEqual(crop.effectiveMode(true, 'static', 'theatre'), 'whole', 'a choice stored by an earlier version');
     },
 
     'without a series choice the server mode plays, and off from the server does nothing': function () {
-        assert.strictEqual(crop.effectiveMode(true, null, 'static'), 'static');
+        assert.strictEqual(crop.effectiveMode(true, null, 'whole'), 'whole');
         assert.strictEqual(crop.effectiveMode(true, undefined, 'off'), 'off');
-        assert.strictEqual(crop.effectiveMode(true, 'zoom', undefined), 'per-scene');
-    },
-
-    'the old global mode becomes the on/off flag': function () {
-        function storage(values) {
-            return {
-                values: values,
-                getItem: function (key) {
-                    return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
-                },
-                setItem: function (key, value) {
-                    this.values[key] = String(value);
-                },
-                removeItem: function (key) {
-                    delete this.values[key];
-                }
-            };
-        }
-
-        var cases = [
-            [{ 'autocrop.mode': 'off' }, { 'autocrop.enabled': 'off' }],
-            [{ 'autocrop.mode': 'static' }, { 'autocrop.enabled': 'on' }],
-            [{ 'autocrop.mode': 'per-scene' }, { 'autocrop.enabled': 'on' }],
-            [{ 'autocrop.mode': 'off', 'autocrop.enabled': 'on' }, { 'autocrop.enabled': 'on' }],
-            [{}, {}],
-            [{ 'autocrop.enabled': 'off' }, { 'autocrop.enabled': 'off' }]
-        ];
-        cases.forEach(function (c) {
-            var s = storage(c[0]);
-            crop.migrateStorage(s);
-            assert.deepStrictEqual(s.values, c[1], JSON.stringify(c[0]));
-        });
+        assert.strictEqual(crop.effectiveMode(true, 'zoom', undefined), 'theatre');
+        assert.strictEqual(crop.effectiveMode(true, null, 'per-scene'), 'theatre', 'a server default from an earlier version');
     }
 };
 

@@ -6,30 +6,22 @@ namespace Jellyfin.Plugin.AutoCrop;
 
 public sealed record AnalyzerOptions(
     double MinimumBarPercent,
-    double MinimumSegmentSeconds,
-    int MaxSegments = 200,
     double MinimumMatteShare = 0.05,
     int MinimumMatteKeyframes = 20);
 
 /// <summary>
-/// Turns per-keyframe cropdetect bounds into the picture area of a file. Every rule here only ever
-/// grows a box: a row or column that shows picture in any keyframe a box covers is never cut.
+/// Turns per-keyframe cropdetect bounds into the two crops of a file: the whole picture, which never
+/// cuts any of it, and the theatre crop, the narrowest letterbox shape the file keeps coming back to.
 /// </summary>
 public static class CropAnalyzer
 {
     /// <summary>
     /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
     /// </summary>
-    public const int Version = 4;
+    public const int Version = 6;
 
     /// <summary>Fewer trickplay thumbnails with picture than this prove nothing.</summary>
     internal const int MinimumThumbnails = 20;
-
-    /// <summary>
-    /// A switch between two keyframes further apart than this isn't timed to the frame: decoding that
-    /// much to place one switch isn't worth it, and files that sparse are measured every 2 seconds anyway.
-    /// </summary>
-    internal const double MaxWindowSeconds = 120;
 
     /// <summary>Display aspect ratios that films and series are made in.</summary>
     internal static readonly double[] StandardRatios =
@@ -78,24 +70,13 @@ public static class CropAnalyzer
         return (snapped, null);
     }
 
-    /// <summary>
-    /// Snaps every segment like <see cref="Snap"/>; a suspicious one gets the whole-file
-    /// <paramref name="crop"/>, which contains every keyframe. Neighbours that end up equal are joined.
-    /// </summary>
-    public static IReadOnlyList<CropSegment> SnapSegments(
-        IReadOnlyList<CropSegment> segments, CropBox crop, int frameWidth, int frameHeight, double pixelAspect = 1)
-        => MergeSimilar(
-            segments.Select(s => s with { Box = Snap(s.Box, frameWidth, frameHeight, pixelAspect) is (var box, null) ? box : crop }).ToList(),
-            0,
-            0);
-
     // The new start of a side grown from length to size, centred on the old one and kept in the frame.
     private static int Grow(int start, int length, int size, int frame)
         => Math.Clamp(start - ((size - length) / 2), 0, frame - size);
 
     /// <summary>
-    /// The whole-file picture area: the union over every keyframe that isn't fully black. A row or
-    /// column that is black in all of them is a burned-in bar; one full-frame shot means no crop.
+    /// The whole picture: the union over every keyframe that isn't fully black. A row or column that
+    /// is black in all of them is a burned-in bar; one full-frame shot means no crop.
     /// </summary>
     public static CropBox Union(IEnumerable<KeyframeSample> samples, int frameWidth, int frameHeight, double minimumBarPercent)
     {
@@ -109,9 +90,29 @@ public static class CropAnalyzer
     }
 
     /// <summary>
+    /// The theatre crop: the narrowest letterbox shape (full width, bars above and below) among the
+    /// shapes the file keeps coming back to, which wider shots are cut to, as a regular cinema shows
+    /// an IMAX film. The whole picture when there is none. A pillarbox shape never counts: on a wide
+    /// screen it only adds to the side bars, and cropping to it would cut the sides of everything else.
+    /// </summary>
+    public static CropBox TheatreCrop(IReadOnlyList<KeyframeSample> samples, int frameWidth, int frameHeight, AnalyzerOptions options)
+    {
+        var boxes = samples.Select(s => s.Box).OfType<CropBox>().ToList();
+        if (boxes.Count == 0)
+            return CropBox.Full(frameWidth, frameHeight);
+
+        var toleranceX = Math.Max(4, frameWidth / 200);
+        var toleranceY = Math.Max(4, frameHeight / 200);
+        var mattes = Mattes(boxes, toleranceX, toleranceY, options);
+        var union = mattes[^1];
+        var letterbox = mattes.FirstOrDefault(m => m != union && m.X - union.X <= toleranceX && union.Right - m.Right <= toleranceX);
+        return DropThinBars(letterbox ?? union, frameWidth, frameHeight, options.MinimumBarPercent);
+    }
+
+    /// <summary>
     /// Whether trickplay thumbnails prove there is nothing to crop: together they show picture in
     /// every row and column of the thumbnail, and no letterbox or pillarbox recurs in enough of them
-    /// (5%, at least 5) to be a per-scene matte. This only ever concludes "no crop"; every crop comes
+    /// (5%, at least 5) to be a shape of its own. This only ever concludes "no crop"; every crop comes
     /// from the exact scan.
     /// </summary>
     public static bool ShowsNoBars(IReadOnlyList<KeyframeSample> thumbnails, int width, int height)
@@ -121,7 +122,7 @@ public static class CropAnalyzer
             return false;
 
         // One thumbnail pixel of tolerance: that is about 6 video pixels, under the 1% minimum bar.
-        var options = new AnalyzerOptions(0, 0, MinimumMatteShare: 0.05, MinimumMatteKeyframes: 5);
+        var options = new AnalyzerOptions(0, MinimumMatteShare: 0.05, MinimumMatteKeyframes: 5);
         return Mattes(boxes, 1, 1, options).Count == 1;
     }
 
@@ -148,136 +149,15 @@ public static class CropAnalyzer
     }
 
     /// <summary>
-    /// The per-scene timeline. Every keyframe gets the smallest of the file's mattes that contains its
-    /// box, so a dark shot or a title card, whose box is smaller than the real picture, lands in the
-    /// matte of its scene instead of becoming a picture shape of its own. Consecutive keyframes with
-    /// the same matte form a run; the stretch between two runs, where the real change happened
-    /// somewhere between two keyframes, gets the union of both. Segments shorter than the minimum
-    /// are absorbed into a neighbour by union. <paramref name="refined"/> holds the frames decoded
-    /// around each switch (see <see cref="SwitchWindows"/>): they take part in the timeline, so a
-    /// switch lands on the frame of the cut, but not in finding the mattes, which stay a keyframe statistic.
-    /// </summary>
-    public static IReadOnlyList<CropSegment> Segments(
-        IReadOnlyList<KeyframeSample> samples,
-        int frameWidth,
-        int frameHeight,
-        double durationSeconds,
-        AnalyzerOptions options,
-        IReadOnlyList<KeyframeSample>? refined = null)
-    {
-        var all = refined == null ? samples : samples.Concat(refined).ToList();
-        var end = Math.Max(durationSeconds, all.Count > 0 ? all.Max(s => s.Time) : 0);
-        var picture = all.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
-        if (picture.Count == 0)
-            return new[] { new CropSegment(0, end, CropBox.Full(frameWidth, frameHeight)) };
-
-        var (toleranceX, toleranceY) = Tolerance(frameWidth, frameHeight);
-        var keyframeBoxes = samples.Select(s => s.Box).OfType<CropBox>().ToList();
-        var mattes = keyframeBoxes.Count == 0
-            ? Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options)
-            : Mattes(keyframeBoxes, toleranceX, toleranceY, options, refined?.Select(s => s.Box).OfType<CropBox>());
-        var runs = Runs(picture, mattes);
-
-        var segments = new List<CropSegment>();
-        for (var i = 0; i < runs.Count; i++)
-        {
-            var run = runs[i];
-            if (i > 0 && run.First > runs[i - 1].Last)
-                segments.Add(new CropSegment(runs[i - 1].Last, run.First, runs[i - 1].Box.Union(run.Box)));
-
-            var start = i == 0 ? 0 : run.First;
-            var stop = i == runs.Count - 1 ? end : run.Last;
-            segments.Add(new CropSegment(start, stop, run.Box));
-        }
-
-        segments = MergeSimilar(segments, toleranceX, toleranceY);
-        AbsorbShortSegments(segments, options.MinimumSegmentSeconds, toleranceX, toleranceY);
-
-        segments = MergeSimilar(
-            segments.Select(s => s with { Box = DropThinBars(s.Box, frameWidth, frameHeight, options.MinimumBarPercent) }).ToList(),
-            0,
-            0);
-
-        if (segments.Count > options.MaxSegments)
-            return new[] { new CropSegment(0, end, segments.Select(s => s.Box).Aggregate((a, b) => a.Union(b))) };
-
-        return segments;
-    }
-
-    /// <summary>
-    /// The stretches where the picture shape changes somewhere between two keyframes: from the last
-    /// keyframe of one matte to the first of the next, in order. Decoding every frame in them puts
-    /// each switch on the frame of the cut. Gaps over <see cref="MaxWindowSeconds"/> are left out.
-    /// </summary>
-    public static IReadOnlyList<(double Start, double End)> SwitchWindows(
-        IReadOnlyList<KeyframeSample> samples, int frameWidth, int frameHeight, AnalyzerOptions options)
-    {
-        var picture = samples.Where(s => s.Box != null).OrderBy(s => s.Time).ToList();
-        if (picture.Count == 0)
-            return Array.Empty<(double, double)>();
-
-        var (toleranceX, toleranceY) = Tolerance(frameWidth, frameHeight);
-        var runs = Runs(picture, Mattes(picture.Select(s => s.Box!).ToList(), toleranceX, toleranceY, options));
-        var windows = new List<(double Start, double End)>();
-        for (var i = 1; i < runs.Count; i++)
-        {
-            var gap = runs[i].First - runs[i - 1].Last;
-            if (gap > 0 && gap <= MaxWindowSeconds)
-                windows.Add((runs[i - 1].Last, runs[i].First));
-        }
-
-        return windows;
-    }
-
-    /// <summary>
-    /// The frames of a decoded switch window worth keeping: the first and last of every run of equal
-    /// boxes, so each run's extent is kept exactly, and nothing in between. Fully black frames are dropped.
-    /// </summary>
-    public static IReadOnlyList<KeyframeSample> Compact(IEnumerable<KeyframeSample> frames)
-    {
-        var picture = frames.Where(f => f.Box != null).ToList();
-        var kept = new List<KeyframeSample>();
-        for (var i = 0; i < picture.Count; i++)
-        {
-            if (i == 0 || i == picture.Count - 1 || picture[i].Box != picture[i - 1].Box || picture[i].Box != picture[i + 1].Box)
-                kept.Add(picture[i]);
-        }
-
-        return kept;
-    }
-
-    // Half a percent of the frame: boxes closer than this are the same shape.
-    private static (int X, int Y) Tolerance(int frameWidth, int frameHeight)
-        => (Math.Max(4, frameWidth / 200), Math.Max(4, frameHeight / 200));
-
-    // Consecutive samples (in time order) with the same matte, the smallest one containing each box.
-    private static List<(double First, double Last, CropBox Box)> Runs(IReadOnlyList<KeyframeSample> picture, IReadOnlyList<CropBox> mattes)
-    {
-        var runs = new List<(double First, double Last, CropBox Box)>();
-        foreach (var sample in picture)
-        {
-            var matte = mattes.First(m => m.Contains(sample.Box!));
-            if (runs.Count > 0 && runs[^1].Box == matte)
-                runs[^1] = (runs[^1].First, sample.Time, matte);
-            else
-                runs.Add((sample.Time, sample.Time, matte));
-        }
-
-        return runs;
-    }
-
-    /// <summary>
     /// The picture shapes the file really uses, smallest first. Always the whole-file union, plus
     /// every letterbox (full width, equal bars top and bottom) or pillarbox (full height, equal bars
     /// left and right) that recurs in enough keyframes. Dark shots and credits give scattered,
     /// asymmetric boxes that never recur often enough to count. Each matte is the union of its
-    /// cluster, so it never cuts picture any of its keyframes showed. <paramref name="extra"/> boxes
-    /// (frames decoded around switches) only widen the whole-file union; they don't form or count for mattes.
+    /// cluster, so it never cuts picture any of its keyframes showed.
     /// </summary>
-    internal static IReadOnlyList<CropBox> Mattes(
-        IReadOnlyList<CropBox> boxes, int toleranceX, int toleranceY, AnalyzerOptions options, IEnumerable<CropBox>? extra = null)
+    internal static IReadOnlyList<CropBox> Mattes(IReadOnlyList<CropBox> boxes, int toleranceX, int toleranceY, AnalyzerOptions options)
     {
-        var union = boxes.Concat(extra ?? Enumerable.Empty<CropBox>()).Aggregate((a, b) => a.Union(b));
+        var union = boxes.Aggregate((a, b) => a.Union(b));
         var mattes = new List<CropBox> { union };
         var needed = Math.Max(options.MinimumMatteKeyframes, options.MinimumMatteShare * boxes.Count);
 
@@ -321,59 +201,5 @@ public static class CropAnalyzer
             if (aspect is >= 1.30 and <= 2.80 && !mattes.Any(m => m.IsCloseTo(matte, toleranceX, toleranceY)))
                 mattes.Add(matte);
         }
-    }
-
-    private static List<CropSegment> MergeSimilar(List<CropSegment> segments, int toleranceX, int toleranceY)
-    {
-        var merged = new List<CropSegment>();
-        foreach (var segment in segments)
-        {
-            if (merged.Count > 0 && merged[^1].Box.IsCloseTo(segment.Box, toleranceX, toleranceY))
-                merged[^1] = new CropSegment(merged[^1].Start, segment.End, merged[^1].Box.Union(segment.Box));
-            else
-                merged.Add(segment);
-        }
-
-        return merged;
-    }
-
-    private static void AbsorbShortSegments(List<CropSegment> segments, double minimumSeconds, int toleranceX, int toleranceY)
-    {
-        while (segments.Count > 1)
-        {
-            var shortest = -1;
-            for (var i = 0; i < segments.Count; i++)
-            {
-                if (segments[i].Duration < minimumSeconds && (shortest < 0 || segments[i].Duration < segments[shortest].Duration))
-                    shortest = i;
-            }
-
-            if (shortest < 0)
-                return;
-
-            // Join the neighbour that loses the least zoom, so a bridge between a narrow and a wide
-            // scene widens the wide scene instead of the narrow one.
-            var neighbour = shortest == 0 ? 1
-                : shortest == segments.Count - 1 ? shortest - 1
-                : ZoomLost(segments[shortest], segments[shortest - 1]) <= ZoomLost(segments[shortest], segments[shortest + 1])
-                    ? shortest - 1
-                    : shortest + 1;
-
-            var first = Math.Min(shortest, neighbour);
-            var a = segments[first];
-            var b = segments[first + 1];
-            segments[first] = new CropSegment(a.Start, b.End, a.Box.Union(b.Box));
-            segments.RemoveAt(first + 1);
-
-            var merged = MergeSimilar(segments, toleranceX, toleranceY);
-            segments.Clear();
-            segments.AddRange(merged);
-        }
-    }
-
-    private static double ZoomLost(CropSegment a, CropSegment b)
-    {
-        var union = a.Box.Union(b.Box).Area;
-        return ((union - a.Box.Area) * a.Duration) + ((union - b.Box.Area) * b.Duration);
     }
 }

@@ -43,10 +43,10 @@ public class AutoCropController : ControllerBase
     }
 
     /// <summary>
-    /// The crop for an item the caller can see, for the web player, with the mode it plays with (its
-    /// own, its series', its library's or the server default) and the series (or the movie itself) a
-    /// viewer's own mode is remembered for. 404 when there is no result, the file changed since the
-    /// scan, no crop is needed, or the item isn't visible to the caller.
+    /// The crops for an item the caller can see, for the web player, with the mode it plays with (its
+    /// own, its series', its library's, or the server default for films or episodes) and the series
+    /// (or the movie itself) a viewer's own mode is remembered for. 404 when there is no result, the
+    /// file changed since the scan, no crop is needed, or the item isn't visible to the caller.
     /// </summary>
     [HttpGet("Items/{itemId}")]
     [Authorize]
@@ -70,16 +70,16 @@ public class AutoCropController : ControllerBase
         if (result is not { HasCrop: true })
             return NotFound();
 
+        var serverDefault = item is Episode ? config?.EpisodeDefaultMode ?? CropModes.Whole : config?.DefaultMode;
         return Ok(new
         {
             itemId = result.ItemId.ToString("N"),
             frameWidth = result.FrameWidth,
             frameHeight = result.FrameHeight,
             crop = result.Crop,
-            segments = result.Segments,
-            defaultMode = CropModes.Effective(config?.ModeOverrides ?? new List<ModeOverride>(), config?.DefaultMode, Scopes(item!)),
+            theatreCrop = result.TheatreCrop ?? result.Crop,
+            defaultMode = CropModes.Effective(config?.ModeOverrides ?? new List<ModeOverride>(), serverDefault, Scopes(item!)),
             seriesId = (item is Episode { SeriesId: var series } && series != Guid.Empty ? series : item!.Id).ToString("N"),
-            transitionMs = config?.TransitionMs ?? 300,
             zoomStyledSubtitles = config?.ZoomStyledSubtitles ?? true,
         });
     }
@@ -174,7 +174,6 @@ public class AutoCropController : ControllerBase
         {
             scanned = scanned.Count,
             withBars = scanned.Count(r => r.HasCrop),
-            perScene = scanned.Count(r => r.IsPerScene),
             byTrickplay = scanned.Count(r => r.AnalysisSource == AnalysisSources.Trickplay),
             suspicious = scanned.Count(r => r.Suspicious),
             failed = results.Count - scanned.Count,
@@ -223,7 +222,7 @@ public class AutoCropController : ControllerBase
                 frameHeight = x.Result.FrameHeight,
                 crop = x.Result.Crop,
                 aspect = x.Result.Crop is { Height: > 0 } c ? Math.Round((double)c.Width / c.Height, 2) : (double?)null,
-                segments = x.Result.Segments,
+                theatreCrop = x.Result.TheatreCrop ?? x.Result.Crop,
                 scannedAt = x.Result.ScannedAtUtc,
                 source = x.Result.Failed ? null : x.Result.AnalysisSource ?? AnalysisSources.Keyframes,
                 mode = ModeOf(x.Result.ItemId),
@@ -249,14 +248,12 @@ public class AutoCropController : ControllerBase
     internal static string Status(CropResult result)
         => result.Failed ? "failed"
             : result.Suspicious ? "suspicious"
-            : result.IsPerScene ? "per-scene"
             : result.HasCrop ? "bars"
             : "no-bars";
 
     private static bool MatchesFilter(CropResult result, string? filter) => filter switch
     {
         "bars" => result.HasCrop,
-        "per-scene" => result.IsPerScene,
         "no-bars" => !result.Failed && !result.HasCrop && !result.Suspicious,
         "suspicious" => result.Suspicious,
         "failed" => result.Failed,

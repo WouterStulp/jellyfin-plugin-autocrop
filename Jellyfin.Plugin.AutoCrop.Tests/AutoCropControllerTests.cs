@@ -59,7 +59,7 @@ public class AutoCropControllerTests : IDisposable
     }
 
     /// <summary>A movie on disk with a stored scan result, visible to alice unless stated otherwise.</summary>
-    private Movie ScannedMovie(CropBox crop, List<CropSegment>? segments = null, bool visibleToAlice = true, string name = "Film")
+    private Movie ScannedMovie(CropBox crop, CropBox? theatreCrop = null, bool visibleToAlice = true, string name = "Film")
     {
         var path = Path.Combine(_dir, Guid.NewGuid().ToString("N") + ".mkv");
         File.WriteAllText(path, "video");
@@ -74,7 +74,7 @@ public class AutoCropControllerTests : IDisposable
             FrameWidth = 1920,
             FrameHeight = 1080,
             Crop = crop,
-            Segments = segments,
+            TheatreCrop = theatreCrop ?? crop,
             ScannedAtUtc = DateTime.UtcNow,
         });
         _library.GetItemById(movie.Id).Returns(movie);
@@ -86,26 +86,27 @@ public class AutoCropControllerTests : IDisposable
         => JsonSerializer.SerializeToElement(Assert.IsType<OkObjectResult>(result).Value);
 
     [Fact]
-    public void GetItem_ReturnsCropSegmentsAndPlayerSettings()
+    public void GetItem_ReturnsBothCropsAndPlayerSettings()
     {
-        var segments = new List<CropSegment>
-        {
-            new(0, 600, new CropBox(0, 138, 1920, 804)),
-            new(600, 900, new CropBox(0, 35, 1920, 1010)),
-        };
-        var movie = ScannedMovie(new CropBox(0, 35, 1920, 1010), segments);
-        Plugin.Instance!.Configuration.DefaultMode = "static";
-        Plugin.Instance.Configuration.TransitionMs = 0;
+        var movie = ScannedMovie(new CropBox(0, 35, 1920, 1010), new CropBox(0, 138, 1920, 804));
+        Plugin.Instance!.Configuration.DefaultMode = "whole";
 
         var json = Json(Controller(_alice.Id).GetItem(movie.Id));
 
         Assert.Equal(1920, json.GetProperty("frameWidth").GetInt32());
         Assert.Equal(35, json.GetProperty("crop").GetProperty("y").GetInt32());
-        Assert.Equal(2, json.GetProperty("segments").GetArrayLength());
-        Assert.Equal(600, json.GetProperty("segments")[1].GetProperty("start").GetDouble());
-        Assert.Equal("static", json.GetProperty("defaultMode").GetString());
-        Assert.Equal(0, json.GetProperty("transitionMs").GetInt32());
+        Assert.Equal(138, json.GetProperty("theatreCrop").GetProperty("y").GetInt32());
+        Assert.Equal("whole", json.GetProperty("defaultMode").GetString());
         Assert.True(json.GetProperty("zoomStyledSubtitles").GetBoolean());
+    }
+
+    [Fact]
+    public void GetItem_ResultFromBeforeTheTheatreCrop_PlaysTheWholePicture()
+    {
+        var movie = ScannedMovie(new CropBox(0, 35, 1920, 1010));
+        _store.Get(movie.Id)!.TheatreCrop = null;
+
+        Assert.Equal(35, Json(Controller(_alice.Id).GetItem(movie.Id)).GetProperty("theatreCrop").GetProperty("y").GetInt32());
     }
 
     [Fact]
@@ -136,14 +137,29 @@ public class AutoCropControllerTests : IDisposable
         var config = Plugin.Instance!.Configuration;
         string Mode() => Json(Controller(_alice.Id).GetItem(episode.Id)).GetProperty("defaultMode").GetString()!;
 
-        config.DefaultMode = "static";
-        Assert.Equal("static", Mode());
-        config.ModeOverrides.Add(new ModeOverride { Id = library, Mode = "off" });
+        // An episode: the episode default, not the film default.
+        config.DefaultMode = "theatre";
+        config.EpisodeDefaultMode = "whole";
+        Assert.Equal("whole", Mode());
+        config.EpisodeDefaultMode = "off";
         Assert.Equal("off", Mode());
-        config.ModeOverrides.Add(new ModeOverride { Id = series, Mode = "per-scene" });
-        Assert.Equal("per-scene", Mode());
-        config.ModeOverrides.Add(new ModeOverride { Id = episode.Id, Mode = "static" });
-        Assert.Equal("static", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = library, Mode = "theatre" });
+        Assert.Equal("theatre", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = series, Mode = "off" });
+        Assert.Equal("off", Mode());
+        config.ModeOverrides.Add(new ModeOverride { Id = episode.Id, Mode = "whole" });
+        Assert.Equal("whole", Mode());
+    }
+
+    [Fact]
+    public void GetItem_FilmsAndEpisodes_HaveTheirOwnDefaultMode()
+    {
+        var movie = ScannedMovie(new CropBox(0, 60, 1920, 960));
+        var episode = ScannedEpisode(Guid.NewGuid(), Guid.NewGuid());
+        var controller = Controller(_alice.Id);
+
+        Assert.Equal("theatre", Json(controller.GetItem(movie.Id)).GetProperty("defaultMode").GetString());
+        Assert.Equal("whole", Json(controller.GetItem(episode.Id)).GetProperty("defaultMode").GetString());
     }
 
     [Fact]
@@ -164,10 +180,10 @@ public class AutoCropControllerTests : IDisposable
         var controller = Controller(_alice.Id);
 
         Assert.IsType<NoContentResult>(controller.SetMode(movie.Id, "off"));
-        Assert.IsType<NoContentResult>(controller.SetMode(movie.Id, "static"));
+        Assert.IsType<NoContentResult>(controller.SetMode(movie.Id, "whole"));
         var stored = Assert.Single(Plugin.Instance!.Configuration.ModeOverrides);
-        Assert.Equal((movie.Id, "static"), (stored.Id, stored.Mode));
-        Assert.Equal("static", Json(controller.GetResults()).GetProperty("items")[0].GetProperty("mode").GetString());
+        Assert.Equal((movie.Id, "whole"), (stored.Id, stored.Mode));
+        Assert.Equal("whole", Json(controller.GetResults()).GetProperty("items")[0].GetProperty("mode").GetString());
 
         Assert.IsType<NoContentResult>(controller.ClearMode(movie.Id));
         Assert.Empty(Plugin.Instance.Configuration.ModeOverrides);
@@ -183,7 +199,7 @@ public class AutoCropControllerTests : IDisposable
         var controller = Controller(_alice.Id);
 
         Assert.IsType<NoContentResult>(controller.SetMode(library.Id, "off"));
-        Assert.IsType<NoContentResult>(controller.SetMode(series.Id, "static"));
+        Assert.IsType<NoContentResult>(controller.SetMode(series.Id, "whole"));
         Assert.IsType<NotFoundResult>(controller.SetMode(Guid.NewGuid(), "off"));
         Assert.IsType<BadRequestResult>(controller.SetMode(series.Id, "inherit"));
         Assert.IsType<BadRequestResult>(controller.SetMode(series.Id, null));
@@ -203,13 +219,13 @@ public class AutoCropControllerTests : IDisposable
             new() { Name = "Mixed", ItemId = mixed.ToString(), CollectionType = null },
             new() { Name = "Music", ItemId = Guid.NewGuid().ToString(), CollectionType = CollectionTypeOptions.music },
         });
-        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = shows, Mode = "static" });
+        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = shows, Mode = "whole" });
 
         var libraries = Json(Controller(_alice.Id).GetLibraries()).EnumerateArray().ToList();
 
         Assert.Equal(new[] { "Films", "Anime", "Mixed" }, libraries.Select(l => l.GetProperty("name").GetString()));
         Assert.Equal(shows.ToString("N"), libraries[1].GetProperty("id").GetString());
-        Assert.Equal("static", libraries[1].GetProperty("mode").GetString());
+        Assert.Equal("whole", libraries[1].GetProperty("mode").GetString());
         Assert.Equal(JsonValueKind.Null, libraries[0].GetProperty("mode").ValueKind);
     }
 
@@ -225,7 +241,7 @@ public class AutoCropControllerTests : IDisposable
         foreach (var item in episodes.Cast<BaseItem>().Append(film))
             _store.Set(new CropResult { ItemId = item.Id, Path = item.Path, FrameWidth = 1920, FrameHeight = 1080, Crop = item == episodes[0] ? new CropBox(0, 60, 1920, 960) : CropBox.Full(1920, 1080) });
         _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns(episodes.Cast<BaseItem>().Append(film).ToList());
-        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = clover, Mode = "static" });
+        Plugin.Instance!.Configuration.ModeOverrides.Add(new ModeOverride { Id = clover, Mode = "whole" });
 
         var page = Json(Controller(_alice.Id).GetResults(filter: "series", search: "clover"));
 
@@ -235,7 +251,7 @@ public class AutoCropControllerTests : IDisposable
         Assert.Equal("series", row.GetProperty("kind").GetString());
         Assert.Equal(3, row.GetProperty("episodes").GetInt32());
         Assert.Equal(1, row.GetProperty("withBars").GetInt32());
-        Assert.Equal("static", row.GetProperty("mode").GetString());
+        Assert.Equal("whole", row.GetProperty("mode").GetString());
     }
 
     [Fact]
@@ -322,8 +338,7 @@ public class AutoCropControllerTests : IDisposable
     {
         ScannedMovie(new CropBox(0, 60, 1920, 960));
         ScannedMovie(CropBox.Full(1920, 1080));
-        var perScene = new List<CropSegment> { new(0, 10, new CropBox(0, 138, 1920, 804)), new(10, 20, CropBox.Full(1920, 1080)) };
-        ScannedMovie(CropBox.Full(1920, 1080), perScene);
+        ScannedMovie(CropBox.Full(1920, 1080), new CropBox(0, 138, 1920, 804));
         _store.Set(new CropResult { ItemId = Guid.NewGuid(), Path = "/x.mkv", Error = "ffmpeg exited with code 1" });
         var unscanned = new Movie { Id = Guid.NewGuid(), Path = "/media/new.mkv" };
         _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns(new List<BaseItem> { unscanned });
@@ -332,7 +347,6 @@ public class AutoCropControllerTests : IDisposable
 
         Assert.Equal(3, json.GetProperty("scanned").GetInt32());
         Assert.Equal(2, json.GetProperty("withBars").GetInt32());
-        Assert.Equal(1, json.GetProperty("perScene").GetInt32());
         Assert.Equal(1, json.GetProperty("failed").GetInt32());
         Assert.Equal(1, json.GetProperty("pending").GetInt32());
     }
