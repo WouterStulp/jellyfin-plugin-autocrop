@@ -4,12 +4,18 @@ using System.Linq;
 
 namespace Jellyfin.Plugin.AutoCrop;
 
+/// <summary>
+/// <paramref name="MaximumInsertSeconds"/>: an insert shorter than this (a wider shot inside a
+/// scene, like a brief IMAX shot in a 2.20:1 scene) keeps the scene's crop, so its extra picture is
+/// cut for those seconds instead of the zoom bouncing out and in. 0 never cuts.
+/// </summary>
 public sealed record AnalyzerOptions(
     double MinimumBarPercent,
     double MinimumSegmentSeconds,
     int MaxSegments = 200,
     double MinimumMatteShare = 0.05,
-    int MinimumMatteKeyframes = 20);
+    int MinimumMatteKeyframes = 20,
+    double MaximumInsertSeconds = 10);
 
 /// <summary>
 /// Turns per-keyframe cropdetect bounds into the picture area of a file. Every rule here only ever
@@ -20,7 +26,7 @@ public static class CropAnalyzer
     /// <summary>
     /// Bumped whenever the analysis changes, so stored results are recomputed from their keyframes.
     /// </summary>
-    public const int Version = 4;
+    public const int Version = 5;
 
     /// <summary>Fewer trickplay thumbnails with picture than this prove nothing.</summary>
     internal const int MinimumThumbnails = 20;
@@ -153,7 +159,7 @@ public static class CropAnalyzer
     /// matte of its scene instead of becoming a picture shape of its own. Consecutive keyframes with
     /// the same matte form a run; the stretch between two runs, where the real change happened
     /// somewhere between two keyframes, gets the union of both. Segments shorter than the minimum
-    /// are absorbed into a neighbour by union. <paramref name="refined"/> holds the frames decoded
+    /// are absorbed (<see cref="AbsorbShortSegments"/>). <paramref name="refined"/> holds the frames decoded
     /// around each switch (see <see cref="SwitchWindows"/>): they take part in the timeline, so a
     /// switch lands on the frame of the cut, but not in finding the mattes, which stay a keyframe statistic.
     /// </summary>
@@ -191,7 +197,7 @@ public static class CropAnalyzer
         }
 
         segments = MergeSimilar(segments, toleranceX, toleranceY);
-        AbsorbShortSegments(segments, options.MinimumSegmentSeconds, toleranceX, toleranceY);
+        AbsorbShortSegments(segments, options, toleranceX, toleranceY);
 
         segments = MergeSimilar(
             segments.Select(s => s with { Box = DropThinBars(s.Box, frameWidth, frameHeight, options.MinimumBarPercent) }).ToList(),
@@ -337,38 +343,81 @@ public static class CropAnalyzer
         return merged;
     }
 
-    private static void AbsorbShortSegments(List<CropSegment> segments, double minimumSeconds, int toleranceX, int toleranceY)
+    /// <summary>
+    /// Shortest first, every segment under the minimum length is dealt with in one of four ways. A
+    /// shot that fits inside a neighbour's box (a dark shot, a short narrow scene) joins that neighbour,
+    /// which costs nothing. An insert that pokes out of both neighbours while they share a box, and is
+    /// shorter than <see cref="AnalyzerOptions.MaximumInsertSeconds"/>, keeps the scene's box: a brief
+    /// IMAX shot in a 2.20:1 scene is cut at the top and bottom rather than bouncing the zoom. Anything
+    /// else between two neighbours that are long enough stays as it is, a brief zoom-out, because
+    /// widening a long scene for it would lose the zoom for the whole scene. Only next to a neighbour
+    /// that is itself too short does it join by union, the neighbour that loses the least zoom.
+    /// </summary>
+    private static void AbsorbShortSegments(List<CropSegment> segments, AnalyzerOptions options, int toleranceX, int toleranceY)
     {
+        var kept = new HashSet<CropSegment>();
         while (segments.Count > 1)
         {
             var shortest = -1;
             for (var i = 0; i < segments.Count; i++)
             {
-                if (segments[i].Duration < minimumSeconds && (shortest < 0 || segments[i].Duration < segments[shortest].Duration))
+                if (segments[i].Duration < options.MinimumSegmentSeconds
+                    && !kept.Contains(segments[i])
+                    && (shortest < 0 || segments[i].Duration < segments[shortest].Duration))
+                {
                     shortest = i;
+                }
             }
 
             if (shortest < 0)
                 return;
 
-            // Join the neighbour that loses the least zoom, so a bridge between a narrow and a wide
-            // scene widens the wide scene instead of the narrow one.
-            var neighbour = shortest == 0 ? 1
-                : shortest == segments.Count - 1 ? shortest - 1
-                : ZoomLost(segments[shortest], segments[shortest - 1]) <= ZoomLost(segments[shortest], segments[shortest + 1])
-                    ? shortest - 1
-                    : shortest + 1;
+            var segment = segments[shortest];
+            var previous = shortest > 0 ? segments[shortest - 1] : null;
+            var next = shortest < segments.Count - 1 ? segments[shortest + 1] : null;
+            var fitsPrevious = previous?.Box.Contains(segment.Box) ?? false;
+            var fitsNext = next?.Box.Contains(segment.Box) ?? false;
+
+            int neighbour;
+            if (fitsPrevious || fitsNext)
+            {
+                neighbour = fitsPrevious && (!fitsNext || ZoomLost(segment, previous!) <= ZoomLost(segment, next!)) ? shortest - 1 : shortest + 1;
+            }
+            else if (previous != null && next != null && previous.Box.IsCloseTo(next.Box, toleranceX, toleranceY)
+                && segment.Duration < options.MaximumInsertSeconds)
+            {
+                segments[shortest - 1] = new CropSegment(previous.Start, next.End, previous.Box.Union(next.Box));
+                segments.RemoveRange(shortest, 2);
+                Merge(segments, toleranceX, toleranceY);
+                continue;
+            }
+            else if ((previous == null || previous.Duration >= options.MinimumSegmentSeconds)
+                && (next == null || next.Duration >= options.MinimumSegmentSeconds))
+            {
+                kept.Add(segment);
+                continue;
+            }
+            else
+            {
+                neighbour = previous == null ? shortest + 1
+                    : next == null ? shortest - 1
+                    : ZoomLost(segment, previous) <= ZoomLost(segment, next) ? shortest - 1 : shortest + 1;
+            }
 
             var first = Math.Min(shortest, neighbour);
             var a = segments[first];
             var b = segments[first + 1];
             segments[first] = new CropSegment(a.Start, b.End, a.Box.Union(b.Box));
             segments.RemoveAt(first + 1);
-
-            var merged = MergeSimilar(segments, toleranceX, toleranceY);
-            segments.Clear();
-            segments.AddRange(merged);
+            Merge(segments, toleranceX, toleranceY);
         }
+    }
+
+    private static void Merge(List<CropSegment> segments, int toleranceX, int toleranceY)
+    {
+        var merged = MergeSimilar(segments, toleranceX, toleranceY);
+        segments.Clear();
+        segments.AddRange(merged);
     }
 
     private static double ZoomLost(CropSegment a, CropSegment b)

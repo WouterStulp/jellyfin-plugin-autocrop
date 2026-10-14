@@ -21,6 +21,12 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Real format switches last much longer; shorter changes are merged into a neighbour.</summary>
     public double MinimumSegmentSeconds { get; set; } = 30.0;
 
+    /// <summary>
+    /// A wider shot shorter than this inside a scene (a brief IMAX shot in a 2.20:1 scene) keeps the
+    /// scene's crop, cutting its top and bottom for those seconds instead of bouncing the zoom. 0 never cuts.
+    /// </summary>
+    public double MaximumInsertSeconds { get; set; } = 10.0;
+
     public int TransitionMs { get; set; } = 300;
 
     /// <summary>

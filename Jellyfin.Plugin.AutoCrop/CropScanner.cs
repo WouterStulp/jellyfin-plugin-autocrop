@@ -94,7 +94,7 @@ public class CropScanner
     internal static AnalyzerOptions Options()
     {
         var config = Plugin.Instance?.Configuration ?? new PluginConfiguration();
-        return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds);
+        return new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds, MaximumInsertSeconds: config.MaximumInsertSeconds);
     }
 
     /// <summary>

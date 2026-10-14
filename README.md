@@ -10,7 +10,7 @@ Some files store their black bars inside the video: a widescreen film saved as a
 
 ## Features
 
-- **Exact.** Every file is measured, so nothing is guessed and no picture is ever cut off.
+- **Exact.** Every file is measured, so nothing is guessed and no picture is ever cut off. The one exception is a brief IMAX shot inside a widescreen scene, which keeps the scene's crop instead of bouncing the zoom; that's a setting.
 - **Follows IMAX scenes.** Films that switch between widescreen and taller IMAX scenes are followed scene by scene, with every switch timed to the frame of the cut.
 - **Only zooms when it helps.** On a normal 16:9 screen nothing changes.
 - **Works in the background.** New films and episodes are measured automatically, usually in about a second.
@@ -58,6 +58,7 @@ Go to **Dashboard → Plugins → AutoCrop**.
   - default mode, and a mode per library
   - minimum bar size (1%)
   - minimum scene length (30 s)
+  - crop inserts shorter than (10 s): a brief taller shot inside a widescreen scene keeps the scene's crop
   - zoom transition (300 ms)
   - zoom styled (ASS) subtitles with the picture (on)
   - GPU decoding (on)

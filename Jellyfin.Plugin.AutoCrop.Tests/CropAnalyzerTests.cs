@@ -276,15 +276,47 @@ public class CropAnalyzerTests
     }
 
     [Fact]
-    public void Segments_ShortWideFlash_WidensTheCropInsteadOfBeingCut()
+    public void Segments_BriefInsertInsideAScene_KeepsTheScenesCrop()
     {
-        // One full-frame keyframe at 30 s inside a 2.39 film: under 2 s on its own.
+        // One full-frame keyframe at 30 s inside a 2.39 film, 4 s with the gaps on both sides: cut
+        // at the top and bottom for those seconds rather than bouncing the zoom.
         var samples = Every2s(0, 30, Scope).Append(K(30, Full)).Concat(Every2s(32, 60, Scope)).ToList();
 
-        var segments = Segments(samples, 60);
+        var segments = Segments(samples, 60, Options with { MinimumSegmentSeconds = 6, MaximumInsertSeconds = 10 });
 
-        Assert.Contains(segments, s => s.Box == Full && s.Start <= 30 && s.End >= 30);
-        Assert.DoesNotContain(segments, s => s.Duration < 2 && segments.Count > 1);
+        var only = Assert.Single(segments);
+        Assert.Equal(Scope, only.Box);
+        Assert.Equal(60, only.End);
+    }
+
+    [Fact]
+    public void Segments_InsertOverTheLimit_StaysABriefZoomOut()
+    {
+        var samples = Every2s(0, 30, Scope).Append(K(30, Full)).Concat(Every2s(32, 60, Scope)).ToList();
+
+        foreach (var limit in new[] { 3.0, 0.0 })
+        {
+            var segments = Segments(samples, 60, Options with { MinimumSegmentSeconds = 6, MaximumInsertSeconds = limit });
+
+            // Never widened into a long neighbour: that would lose the zoom for the whole scene.
+            Assert.Equal(new[] { Scope, Full, Scope }, segments.Select(s => s.Box));
+            Assert.Equal(28, segments[1].Start);
+            Assert.Equal(32, segments[1].End);
+        }
+    }
+
+    [Fact]
+    public void Segments_ShortSegment_WidensOnlyAShortNeighbour()
+    {
+        // A 4 s full-frame stretch next to a 4 s 2.39 stretch: the short neighbour is widened, the
+        // long one on the other side is left alone.
+        var samples = Every2s(0, 60, Scope).Append(K(60, Full)).Concat(Every2s(62, 68, Scope)).Concat(Every2s(68, 120, Imax)).ToList();
+
+        var segments = Segments(samples, 120, Options with { MinimumSegmentSeconds = 6, MaximumInsertSeconds = 0 });
+
+        Assert.Equal(new[] { Scope, Full, Imax }, segments.Select(s => s.Box));
+        Assert.Equal(58, segments[1].Start);
+        Assert.Equal(66, segments[1].End);
     }
 
     [Fact]

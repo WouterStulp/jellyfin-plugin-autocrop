@@ -25,7 +25,7 @@ public class CropFixtureTests
         public double Share(CropBox box) => Timeline.Where(s => s.Box == box).Sum(s => s.Duration) / Duration;
     }
 
-    private static Fixture Load(string name)
+    private static Fixture Load(string name, double? maximumInsertSeconds = null)
     {
         var parser = new CropdetectParser();
 
@@ -36,7 +36,9 @@ public class CropFixtureTests
 
         var config = new PluginConfiguration();
         var result = new CropResult { FrameWidth = parser.FrameWidth!.Value, FrameHeight = parser.FrameHeight!.Value, PixelAspect = parser.PixelAspect };
-        CropScanner.Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, new AnalyzerOptions(config.MinimumBarPercent, config.MinimumSegmentSeconds));
+        var options = new AnalyzerOptions(
+            config.MinimumBarPercent, config.MinimumSegmentSeconds, MaximumInsertSeconds: maximumInsertSeconds ?? config.MaximumInsertSeconds);
+        CropScanner.Analyse(result, parser.Samples, parser.DurationSeconds ?? 0, options);
         return new Fixture(result.FrameWidth, result.FrameHeight, parser.Samples, result);
     }
 
@@ -50,14 +52,38 @@ public class CropFixtureTests
 
     [Theory]
     [MemberData(nameof(AllFixtures))]
-    public void EveryKeyframesPicture_IsInsideItsSegment(string name)
+    public void EveryKeyframesPicture_IsInsideItsSegment_WhenInsertsAreNeverCut(string name)
     {
-        var fixture = Load(name);
+        var fixture = Load(name, maximumInsertSeconds: 0);
 
         foreach (var sample in fixture.Samples.Where(s => s.Box != null))
         {
             var segment = fixture.Timeline.First(s => s.Start <= sample.Time && sample.Time <= s.End);
             Assert.True(segment.Box.Contains(sample.Box!), $"{name} at {sample.Time}: {sample.Box} outside {segment.Box}");
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(AllFixtures))]
+    public void OnlyBriefInserts_AreEverCut(string name)
+    {
+        var fixture = Load(name);
+        var limit = new PluginConfiguration().MaximumInsertSeconds;
+
+        // Keyframes outside their segment's box come in runs; each run is one cut insert, under the limit.
+        var outside = fixture.Samples
+            .Where(s => s.Box != null)
+            .OrderBy(s => s.Time)
+            .Where(s => !fixture.Timeline.First(t => t.Start <= s.Time && s.Time <= t.End).Box.Contains(s.Box!))
+            .ToList();
+        var runStart = double.NaN;
+        var previous = double.NaN;
+        foreach (var sample in outside)
+        {
+            if (double.IsNaN(runStart) || sample.Time - previous > limit)
+                runStart = sample.Time;
+            Assert.True(sample.Time - runStart < limit, $"{name}: picture cut from {runStart} to {sample.Time}");
+            previous = sample.Time;
         }
     }
 
@@ -109,10 +135,11 @@ public class CropFixtureTests
         var segments = fixture.Result.Segments!;
         var scope = segments.Select(s => s.Box).First(b => b != full);
 
-        Assert.InRange(segments.Count, 2, 99);
+        Assert.InRange(segments.Count, 2, 199);
         AssertLetterbox(top, bottom, fixture.Width, scope);
         Assert.All(segments, s => Assert.True(s.Box == scope || s.Box == full, $"{s.Box} at {s.Start}"));
-        Assert.All(segments, s => Assert.True(s.Duration >= 30, $"{s.Duration} s at {s.Start}"));
+        // Only a brief zoom-out between two long scenes may be shorter than the minimum.
+        Assert.All(segments.Where(s => s.Duration < 30), s => Assert.True(s.Box == full, $"{s.Duration} s of {s.Box} at {s.Start}"));
         Assert.True(fixture.Share(scope) > minimumScope, $"scope {fixture.Share(scope):P1}");
         Assert.True(fixture.Share(full) > minimumFull, $"full frame {fixture.Share(full):P1}");
         Assert.Equal(full, fixture.Result.Crop);

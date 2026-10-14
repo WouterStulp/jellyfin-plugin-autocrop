@@ -157,7 +157,11 @@
                                 </label>
                                 <label class="ac-field"><span class="ac-label">Minimum segment length (s)</span>
                                     <input class="ac-input" type="number" id="acMinSegment" min="0" max="600" step="0.5" placeholder="30" />
-                                    <span class="desc">Shorter changes are merged into a neighbouring scene, always keeping the larger picture. Default 30 s: real format changes last much longer.</span>
+                                    <span class="desc">A scene shorter than this doesn't get a zoom of its own. Default 30 s: real format changes last much longer.</span>
+                                </label>
+                                <label class="ac-field"><span class="ac-label">Crop inserts shorter than (s)</span>
+                                    <input class="ac-input" type="number" id="acMaxInsert" min="0" max="600" step="0.5" placeholder="10" />
+                                    <span class="desc">A brief taller shot inside a widescreen scene, like a few seconds of IMAX in a 2.20:1 scene, keeps the scene's crop: its top and bottom are cut for those seconds instead of the zoom bouncing out and in. 0 never cuts picture.</span>
                                 </label>
                                 <label class="ac-check"><input type="checkbox" id="acZoomSubtitles" /><span>Zoom styled (ASS) subtitles with the picture<span class="desc" style="display:block;">Keeps signs and positioned text on their spot in the zoomed picture. Blu-ray (PGS) and DVD subtitles always stay on the whole frame, since they are often placed in the black bars.</span></span></label>
                                 <label class="ac-field"><span class="ac-label">Transition (ms)</span>
@@ -397,6 +401,7 @@
                             $('acDefaultMode').value = c.DefaultMode || 'per-scene';
                             $('acMinBar').value = c.MinimumBarPercent;
                             $('acMinSegment').value = c.MinimumSegmentSeconds;
+                            $('acMaxInsert').value = c.MaximumInsertSeconds;
                             $('acTransition').value = c.TransitionMs;
                             $('acZoomSubtitles').checked = c.ZoomStyledSubtitles !== false;
                         });
@@ -417,6 +422,7 @@
                             c.DefaultMode = $('acDefaultMode').value;
                             c.MinimumBarPercent = number('acMinBar', 1);
                             c.MinimumSegmentSeconds = number('acMinSegment', 30);
+                            c.MaximumInsertSeconds = number('acMaxInsert', 10);
                             c.TransitionMs = Math.round(number('acTransition', 300));
                             c.ZoomStyledSubtitles = $('acZoomSubtitles').checked;
                             return ApiClient.updatePluginConfiguration(PLUGIN_ID, c);
