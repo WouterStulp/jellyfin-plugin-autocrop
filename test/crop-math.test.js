@@ -129,6 +129,12 @@ var tests = {
         assert.ok(!crop.isAspectSheet(null));
     },
 
+    'the extended aspect sheet is moved up only when it would leave the window': function () {
+        assert.strictEqual(crop.fitTop(900, 170, 1080, 10), 900, 'fits: unchanged');
+        assert.strictEqual(crop.fitTop(940, 170, 1080, 10), 900, 'overflows by 30: moved up');
+        assert.strictEqual(crop.fitTop(5, 2000, 1080, 10), 10, 'taller than the window: pinned to the top');
+    },
+
     'the viewer turning cropping off beats everything': function () {
         assert.strictEqual(crop.effectiveMode(false, 'whole', 'theatre'), 'off');
         assert.strictEqual(crop.effectiveMode(false, null, 'theatre'), 'off');

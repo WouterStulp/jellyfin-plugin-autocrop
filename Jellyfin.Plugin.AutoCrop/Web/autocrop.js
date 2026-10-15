@@ -104,6 +104,14 @@
         return normalizeMode(seriesMode) || normalizeMode(serverMode) || 'theatre';
     }
 
+    /**
+     * Jellyfin positions the sheet for its own three options before ours are added; two more rows can
+     * push it past the bottom of the window. The top that keeps it on screen, with a margin.
+     */
+    function fitTop(top, height, viewportHeight, margin) {
+        return Math.max(margin, Math.min(top, viewportHeight - height - margin));
+    }
+
     function transformCss(transform) {
         return transform
             ? 'translate(' + transform.x.toFixed(2) + 'px, ' + transform.y.toFixed(2) + 'px) scale(' + transform.scale.toFixed(4) + ')'
@@ -127,6 +135,7 @@
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
+            fitTop: fitTop,
             effectiveMode: effectiveMode
         };
         return;
@@ -575,6 +584,18 @@
                 after.parentNode.insertBefore(entry, after.nextSibling);
                 after = entry;
             }
+        }
+        keepOnScreen(sheet);
+    }
+
+    function keepOnScreen(sheet) {
+        var top = parseFloat(sheet.style.top);
+        if (sheet.style.position !== 'fixed' || isNaN(top)) {
+            return;
+        }
+        var fitted = fitTop(top, sheet.offsetHeight, window.innerHeight, 10);
+        if (fitted !== top) {
+            sheet.style.top = fitted + 'px';
         }
     }
 
