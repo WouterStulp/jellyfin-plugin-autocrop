@@ -29,11 +29,7 @@ The first scan of your library runs in the background. Most files are done in a 
 
 ## Using it
 
-While watching in the browser, open the **⚙ settings → Aspect Ratio** and choose **Crop black bars**. Choose **Auto**, **Zoom** or **Stretch** to turn it off again. This is remembered in that browser, for everything you watch.
-
-<img src="docs/images/menu.png" alt="The Aspect Ratio menu with Crop black bars selected" width="263">
-
-While it's on, each film or episode plays in the mode the server sets for it: films in the theatre crop, series in the whole picture. Press **C** during playback to switch between:
+While watching in the browser, open the **⚙ settings → Aspect Ratio** and choose **Theatre crop** or **Whole picture**. Choose **Auto**, **Zoom** or **Stretch** to turn it off again. Until you choose, each film or episode plays in the mode the server sets for it: films in the theatre crop, series in the whole picture. The **C** key cycles the same choices during playback:
 
 | Mode | What you see |
 | --- | --- |

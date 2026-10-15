@@ -7,7 +7,8 @@
     var ENABLED_KEY = 'autocrop.enabled';
     var SERIES_KEY = 'autocrop.series.';
     var ASPECT_IDS = ['auto', 'cover', 'fill'];
-    var MENU_LABEL = 'Crop black bars';
+    // The entries added to Jellyfin's aspect-ratio menu, one per mode that crops.
+    var MENU_LABELS = { theatre: 'Theatre crop', whole: 'Whole picture' };
     // The canvas JavascriptSubtitlesOctopus (@jellyfin/libass-wasm) draws ASS/SSA on, in jellyfin-web
     // 10.11 and 12. PGS and VobSub (libpgs, libbitsub) draw on canvases without a class.
     var ASS_CANVAS_CLASS = 'libassjs-canvas';
@@ -103,15 +104,6 @@
         return normalizeMode(seriesMode) || normalizeMode(serverMode) || 'theatre';
     }
 
-    /** The mode "Crop black bars" turns on: the current one when it is on, else the server default, else theatre. */
-    function enabledMode(mode, defaultMode) {
-        if (mode && mode !== 'off') {
-            return mode;
-        }
-        var fallback = normalizeMode(defaultMode);
-        return fallback && fallback !== 'off' ? fallback : 'theatre';
-    }
-
     function transformCss(transform) {
         return transform
             ? 'translate(' + transform.x.toFixed(2) + 'px, ' + transform.y.toFixed(2) + 'px) scale(' + transform.scale.toFixed(4) + ')'
@@ -135,7 +127,6 @@
             nextMode: nextMode,
             transformCss: transformCss,
             isAspectSheet: isAspectSheet,
-            enabledMode: enabledMode,
             effectiveMode: effectiveMode
         };
         return;
@@ -507,10 +498,46 @@
     }
 
     /**
-     * Adds "Crop black bars" to Jellyfin's aspect-ratio sheet (Auto, Cover, Fill, recognised by their
-     * data-id). Choosing it clicks Jellyfin's own Auto, so the aspect setting becomes Auto and the
-     * sheet closes as usual, then turns AutoCrop on. Auto, Cover and Fill turn it off. Any other sheet,
-     * or one that looks different, is left alone.
+     * One entry of Jellyfin's aspect-ratio sheet for a mode, in the sheet's own markup. Choosing it
+     * clicks Jellyfin's own Auto, so the aspect setting becomes Auto and the sheet closes as usual,
+     * then turns AutoCrop on in that mode and remembers it for the series or film, like the c key.
+     */
+    function menuEntry(mode, template, auto, checked) {
+        var item = menuElement('button', template.className);
+        item.type = 'button';
+        item.setAttribute('data-id', 'autocrop-' + mode);
+
+        // Jellyfin marks the selected option with a check icon and keeps a hidden one on the others.
+        if (template.querySelector('.actionsheetMenuItemIcon')) {
+            var icon = menuElement('span', 'actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons check');
+            icon.setAttribute('aria-hidden', 'true');
+            icon.style.visibility = checked ? '' : 'hidden';
+            item.appendChild(icon);
+        }
+
+        var body = menuElement('div', 'listItemBody actionsheetListItemBody');
+        var text = menuElement('div', 'listItemBodyText actionSheetItemText');
+        text.textContent = MENU_LABELS[mode];
+        body.appendChild(text);
+        item.appendChild(body);
+
+        item.addEventListener('click', function (e) {
+            // Jellyfin's own click handler would store the entry's id as the aspect ratio.
+            e.stopPropagation();
+            state.choosingCrop = true;
+            auto.click();
+            state.choosingCrop = false;
+            setEnabled(true);
+            setSeriesMode(mode);
+            showMode();
+        });
+        return item;
+    }
+
+    /**
+     * Adds "Theatre crop" and "Whole picture" to Jellyfin's aspect-ratio sheet (Auto, Cover, Fill,
+     * recognised by their data-id). Auto, Cover and Fill turn AutoCrop off. Any other sheet, or one
+     * that looks different, is left alone.
      */
     function extendAspectSheet(sheet) {
         var items = sheet.querySelectorAll('.actionSheetMenuItem[data-id]');
@@ -525,30 +552,12 @@
 
         var auto = items[ids.indexOf('auto')];
         var last = items[items.length - 1];
-        var active = window.getComputedStyle(state.video).objectFit === 'contain' && currentMode() !== 'off';
-
-        var item = menuElement('button', last.className);
-        item.type = 'button';
-        item.setAttribute('data-id', 'autocrop');
-
-        // Jellyfin marks the selected option with a check icon and keeps a hidden one on the others.
-        var nativeIcon = last.querySelector('.actionsheetMenuItemIcon');
-        if (nativeIcon) {
-            var icon = menuElement('span', 'actionsheetMenuItemIcon listItemIcon listItemIcon-transparent material-icons check');
-            icon.setAttribute('aria-hidden', 'true');
-            icon.style.visibility = active ? '' : 'hidden';
-            item.appendChild(icon);
-            var autoIcon = auto.querySelector('.actionsheetMenuItemIcon');
-            if (active && autoIcon) {
-                autoIcon.style.visibility = 'hidden';
-            }
+        var mode = currentMode();
+        var active = window.getComputedStyle(state.video).objectFit === 'contain' && mode !== 'off';
+        var autoIcon = auto.querySelector('.actionsheetMenuItemIcon');
+        if (active && autoIcon) {
+            autoIcon.style.visibility = 'hidden';
         }
-
-        var body = menuElement('div', 'listItemBody actionsheetListItemBody');
-        var text = menuElement('div', 'listItemBodyText actionSheetItemText');
-        text.textContent = MENU_LABEL;
-        body.appendChild(text);
-        item.appendChild(body);
 
         for (var j = 0; j < items.length; j++) {
             items[j].addEventListener('click', function () {
@@ -559,20 +568,14 @@
             });
         }
 
-        item.addEventListener('click', function (e) {
-            // Jellyfin's own click handler would store "autocrop" as the aspect ratio.
-            e.stopPropagation();
-            state.choosingCrop = true;
-            auto.click();
-            state.choosingCrop = false;
-            setEnabled(true);
-            if (currentMode() === 'off' && state.data) {
-                setSeriesMode(enabledMode('off', state.data.defaultMode));
+        var after = last;
+        for (var k = 0; k < MODES.length; k++) {
+            if (MENU_LABELS[MODES[k]]) {
+                var entry = menuEntry(MODES[k], last, auto, active && mode === MODES[k]);
+                after.parentNode.insertBefore(entry, after.nextSibling);
+                after = entry;
             }
-            showMode();
-        });
-
-        last.parentNode.insertBefore(item, last.nextSibling);
+        }
     }
 
     // Jellyfin appends every dialog, the player's action sheets included, to the body.

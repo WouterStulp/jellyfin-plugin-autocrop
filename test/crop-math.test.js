@@ -122,19 +122,11 @@ var tests = {
         assert.ok(crop.isAspectSheet(['auto', 'cover', 'fill']));
         assert.ok(crop.isAspectSheet(['fill', 'auto', 'cover']));
         assert.ok(!crop.isAspectSheet(['auto', 'cover']), 'missing fill');
-        assert.ok(!crop.isAspectSheet(['auto', 'cover', 'fill', 'autocrop']), 'already extended');
+        assert.ok(!crop.isAspectSheet(['auto', 'cover', 'fill', 'autocrop-theatre', 'autocrop-whole']), 'already extended');
         assert.ok(!crop.isAspectSheet(['0.5', '1', '1.25']), 'playback speed');
         assert.ok(!crop.isAspectSheet(['Auto', 'Cover', 'Fill']), 'labels are not ids');
         assert.ok(!crop.isAspectSheet([]));
         assert.ok(!crop.isAspectSheet(null));
-    },
-
-    'Crop black bars keeps the chosen mode, else the server default, never off': function () {
-        assert.strictEqual(crop.enabledMode('whole', 'theatre'), 'whole');
-        assert.strictEqual(crop.enabledMode('off', 'whole'), 'whole');
-        assert.strictEqual(crop.enabledMode('off', 'static'), 'whole', 'a server default from an earlier version');
-        assert.strictEqual(crop.enabledMode('off', 'off'), 'theatre');
-        assert.strictEqual(crop.enabledMode('off', null), 'theatre');
     },
 
     'the viewer turning cropping off beats everything': function () {
